@@ -1,0 +1,13 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+app/logs/*.log
+!app/logs/.gitkeep
+
+# Operating System Files
+.DS_Store
+Thumbs.db
