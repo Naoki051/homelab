@@ -51,3 +51,17 @@ Antes de submeter ou finalizar qualquer alteração na branch, verifique:
 - [ ] Foram criados apenas os arquivos previamente listados no kickoff?
 - [ ] Nenhum arquivo fora do escopo foi modificado ou apagado acidentalmente?
 - [ ] Arquivos de configuração e infraestrutura permaneceram intactos, a menos que fossem o objetivo direto da branch?
+
+---
+
+## 5. Diretriz de Commits Incrementais (Conventional Commits)
+
+- **Commits a partir do Checklist:** Os commits devem ser executados incrementalmente conforme os itens do checklist planejado forem sendo desenvolvidos e validados.
+- **Padrão Obrigatório:** Utilizar estritamente o padrão [Conventional Commits](https://www.conventionalcommits.org/) com tipos semânticos apropriados:
+  - `feat:` para novas funcionalidades ou componentes.
+  - `docs:` para inclusão ou atualização de documentação.
+  - `chore:` para tarefas de configuração, governança, tooling ou infraestrutura.
+  - `test:` para testes automatizados ou scripts de validação.
+  - `fix:` para correções de bugs.
+- **Atomicidade:** Não acumular o desenvolvimento inteiro em um único commit monolítico ao final. Cada componente ou avanço do checklist deve ter seu commit atômico e explicativo.
+
