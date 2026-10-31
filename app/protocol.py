@@ -75,5 +75,9 @@ class Message:
         """Cria uma mensagem padronizada de resposta (ACK ou ERRO)."""
         payload: Dict[str, Any] = {"status": status, "message": message}
         if extra:
-            payload.update(extra)
+            for k, v in extra.items():
+                if k not in ("status", "message"):
+                    payload[k] = v
+                else:
+                    payload[f"client_{k}"] = v
         return cls(action=cls.ACTION_RESPONSE, payload=payload)

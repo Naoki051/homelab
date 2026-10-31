@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
-Testes automatizados para Protocolo, Banco de Dados e Sessão do Homelab
+Testes automatizados para Protocolo, Banco de Dados, Sessão e Integração de Rede do Homelab
 """
 
 from datetime import datetime, timedelta
 from pathlib import Path
 import shutil
+import socket
 import tempfile
+import threading
+import time
 import unittest
 
+from app.client import do_login_request, do_register_request, send_user_message
 from app.client_session import Session
 from app.database import ClientRepository, hash_password, verify_password
 from app.protocol import Message
+from app.server import handle_client_payload
 
 
 class TestProtocolMessage(unittest.TestCase):
@@ -136,6 +141,81 @@ class TestClientSessionStore(unittest.TestCase):
         expired_session = Session("antigo", "hash_qualquer", expire_date_time=past_time)
         self.assertFalse(expired_session.is_valid())
         self.assertEqual(expired_session.time_remaining(), "expirada")
+
+
+class TestNetworkIntegration(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = Path(self.temp_dir) / "integration_homelab.db"
+        self.log_path = Path(self.temp_dir) / "integration_messages.log"
+        self.repo = ClientRepository(db_path=self.db_path)
+
+        # Inicializa socket servidor em porta efêmera aleatória
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.bind(("127.0.0.1", 0))
+        self.server_socket.listen(5)
+        self.port = self.server_socket.getsockname()[1]
+        self.running = True
+
+        self.server_thread = threading.Thread(target=self._run_server, daemon=True)
+        self.server_thread.start()
+
+    def tearDown(self):
+        self.running = False
+        try:
+            # Conexão dummy para destravar accept
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as dummy:
+                dummy.connect(("127.0.0.1", self.port))
+        except Exception:
+            pass
+        self.server_socket.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run_server(self):
+        while self.running:
+            try:
+                conn, addr = self.server_socket.accept()
+                if not self.running:
+                    conn.close()
+                    break
+                data = conn.recv(4096)
+                if data:
+                    resp_bytes, _ = handle_client_payload(
+                        data, addr, self.repo, self.log_path
+                    )
+                    conn.sendall(resp_bytes)
+                conn.close()
+            except Exception:
+                break
+
+    def test_end_to_end_auth_and_messaging(self):
+        secret = Session.derive_secret("integration_user", "senha123")
+
+        # 1. Login antes de registrar deve falhar (registro obrigatório)
+        ok_login_fail, msg_fail = do_login_request("127.0.0.1", self.port, "integration_user", secret)
+        self.assertFalse(ok_login_fail)
+        self.assertIn("não encontrado", msg_fail)
+
+        # 2. Cadastro de usuário
+        ok_reg, msg_reg = do_register_request("127.0.0.1", self.port, "integration_user", secret)
+        self.assertTrue(ok_reg)
+        self.assertIn("sucesso", msg_reg)
+
+        # 3. Login bem-sucedido
+        ok_login, msg_login = do_login_request("127.0.0.1", self.port, "integration_user", secret)
+        self.assertTrue(ok_login)
+
+        # 4. Envio de mensagem autenticada
+        send_ok = send_user_message(
+            "127.0.0.1", self.port, "integration_user", secret, "Olá Homelab!"
+        )
+        self.assertTrue(send_ok)
+
+        # 5. Verifica se o log foi gravado com a tag do usuário
+        self.assertTrue(self.log_path.exists())
+        log_content = self.log_path.read_text(encoding="utf-8")
+        self.assertIn("integration_user@", log_content)
+        self.assertIn("Olá Homelab!", log_content)
 
 
 if __name__ == "__main__":

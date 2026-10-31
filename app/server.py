@@ -87,7 +87,7 @@ def handle_client_payload(
             resp = Message.response(
                 Message.STATUS_OK,
                 reason,
-                {"username": username, "status": "online"},
+                {"username": username, "presence": "online"},
             )
             return resp.to_bytes(), username
         else:
