@@ -54,14 +54,8 @@ Antes de submeter ou finalizar qualquer alteração na branch, verifique:
 
 ---
 
-## 5. Diretriz de Commits Incrementais (Conventional Commits)
+## 5. Diretriz de Commits
 
-- **Commits a partir do Checklist:** Os commits devem ser executados incrementalmente conforme os itens do checklist planejado forem sendo desenvolvidos e validados.
-- **Padrão Obrigatório:** Utilizar estritamente o padrão [Conventional Commits](https://www.conventionalcommits.org/) com tipos semânticos apropriados:
-  - `feat:` para novas funcionalidades ou componentes.
-  - `docs:` para inclusão ou atualização de documentação.
-  - `chore:` para tarefas de configuração, governança, tooling ou infraestrutura.
-  - `test:` para testes automatizados ou scripts de validação.
-  - `fix:` para correções de bugs.
-- **Atomicidade:** Não acumular o desenvolvimento inteiro em um único commit monolítico ao final. Cada componente ou avanço do checklist deve ter seu commit atômico e explicativo.
+Para a especificação completa sobre commits atômicos por action, padrões do Conventional Commits e a regra inegociável de **proteção contra commits diretos na `main`**, consulte:
+- [`.gemini/rules/commit-rules.md`](commit-rules.md)
 
