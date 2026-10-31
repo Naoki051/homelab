@@ -14,8 +14,17 @@ import socket
 import sys
 from typing import Optional, Tuple
 
-from app.client_session import Session
-from app.protocol import Message
+# Garante que a raiz do projeto esteja no sys.path para suportar execução a partir de qualquer diretório
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from app.client_session import Session
+    from app.protocol import Message
+except ImportError:
+    from client_session import Session
+    from protocol import Message
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9000

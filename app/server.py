@@ -13,8 +13,17 @@ import socket
 import sys
 from typing import Optional, Tuple
 
-from app.database import ClientRepository
-from app.protocol import Message
+# Garante que a raiz do projeto esteja no sys.path para suportar execução a partir de qualquer diretório
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from app.database import ClientRepository
+    from app.protocol import Message
+except ImportError:
+    from database import ClientRepository
+    from protocol import Message
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 9000
