@@ -62,6 +62,7 @@ A documentação está organizada entre **Infraestrutura do Homelab** e **Aplica
 ### 💻 Aplicações e Arquitetura de Software (`docs/app/`)
 * [**001. Conexão TCP via Sockets e Persistência de Logs**](docs/app/001-connection-tcp.md): Especificação do socket TCP puro na porta 9000 e gravação em arquivo.
 * [**002. Definição das Stacks de Infraestrutura e Software**](docs/app/002-stack-definicao-e-arquitetura.md): Diretrizes oficiais de arquitetura, hardware e stack oficial em Python 3.
+* [**003. Autenticação de Clientes, Classes OO e Quick Login**](docs/app/003-client-auth-and-storage.md): Especificação da tabela `clients` em SQLite, classes `Client`, `Session` e `Message`, e documento NoSQL para Quick Login.
 
 ---
 
@@ -102,18 +103,26 @@ homelab/
 ├── app/
 │   ├── client.py
 │   ├── server.py
+│   ├── protocol.py
+│   ├── database.py
+│   ├── client_session.py
+│   ├── data/
+│   │   └── homelab.db
 │   └── logs/
 │       └── server_messages.log
 ├── docs/
 │   ├── app/
 │   │   ├── 001-connection-tcp.md
-│   │   └── 002-stack-definicao-e-arquitetura.md
+│   │   ├── 002-stack-definicao-e-arquitetura.md
+│   │   └── 003-client-auth-and-storage.md
 │   └── infra/
 │       ├── 01-preparacao-miui-android.md
 │       ├── 02-rede-ssh-e-acesso-remoto.md
 │       ├── 03-servicos-web-dev-e-bancos.md
 │       ├── 04-containers-docker-sem-root.md
 │       └── 05-automacao-boot-e-manutencao.md
+├── tests/
+│   └── test_auth_and_session.py
 └── scripts/
     ├── 01-bootstrap-termux.sh
     ├── 02-setup-dev-stack.sh
