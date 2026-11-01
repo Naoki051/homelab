@@ -5,13 +5,14 @@ Define o modelo Client e a classe ClientRepository para persistência em SQLite,
 estruturado com SQL padrão compatível com futura migração para PostgreSQL.
 """
 
+from contextlib import contextmanager
 from datetime import datetime
 import hashlib
 import hmac
 from pathlib import Path
 import secrets
 import sqlite3
-from typing import Optional, Tuple
+from typing import Any, Dict, Generator, Optional, Tuple, Union
 
 
 def hash_password(secret: str) -> str:
@@ -55,7 +56,7 @@ class Client:
         last_seen: Optional[str] = None,
         created_at: Optional[str] = None,
         updated_at: Optional[str] = None,
-    ):
+    ) -> None:
         self.id = id
         self.username = username
         self.password_hash = password_hash
@@ -64,7 +65,7 @@ class Client:
         self.created_at = created_at
         self.updated_at = updated_at
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Retorna os dados públicos do cliente (sem expor hash de senha)."""
         return {
             "id": self.id,
@@ -81,15 +82,26 @@ class ClientRepository:
 
     DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "homelab.db"
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None) -> None:
         self.db_path = db_path or self.DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.init_schema()
 
-    def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+    @contextmanager
+    def connection(self) -> Generator[sqlite3.Connection, None, None]:
+        """Gerenciador de contexto determinístico para conexões SQLite."""
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    @contextmanager
+    def _get_connection(self) -> Generator[sqlite3.Connection, None, None]:
+        """Alias retrocompatível para connection()."""
+        with self.connection() as conn:
+            yield conn
 
     def init_schema(self) -> None:
         """Cria a tabela clients se não existir."""
@@ -104,14 +116,14 @@ class ClientRepository:
             updated_at TEXT NOT NULL
         );
         """
-        with self._get_connection() as conn:
+        with self.connection() as conn:
             conn.execute(query)
             conn.commit()
 
     def get_by_username(self, username: str) -> Optional[Client]:
         """Recupera um cliente pelo username."""
         query = "SELECT * FROM clients WHERE username = ? LIMIT 1;"
-        with self._get_connection() as conn:
+        with self.connection() as conn:
             cursor = conn.execute(query, (username,))
             row = cursor.fetchone()
             if not row:
@@ -148,7 +160,7 @@ class ClientRepository:
         INSERT INTO clients (username, password, status, last_seen, created_at, updated_at)
         VALUES (?, ?, 'offline', NULL, ?, ?);
         """
-        with self._get_connection() as conn:
+        with self.connection() as conn:
             cursor = conn.execute(insert_query, (username, pwd_hash, now, now))
             conn.commit()
             client_id = cursor.lastrowid
@@ -179,14 +191,19 @@ class ClientRepository:
 
         return True, "Autenticação realizada com sucesso.", client
 
-    def update_status(self, username: str, status: str) -> None:
+    def update_status(self, username: str, status: Union[str, bool]) -> bool:
         """Atualiza o status (online/offline) e last_seen do cliente."""
         now = datetime.now().isoformat()
+        if isinstance(status, bool):
+            status_str = "online" if status else "offline"
+        else:
+            status_str = str(status)
         query = """
         UPDATE clients
         SET status = ?, last_seen = ?, updated_at = ?
         WHERE username = ?;
         """
-        with self._get_connection() as conn:
-            conn.execute(query, (status, now, now, username))
+        with self.connection() as conn:
+            cursor = conn.execute(query, (status_str, now, now, username))
             conn.commit()
+            return cursor.rowcount > 0

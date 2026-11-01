@@ -10,7 +10,17 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Optional
+import sys
+from typing import Any, Dict, Optional
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from app.exceptions import StorageError
+except ImportError:
+    from exceptions import StorageError
 
 
 class Session:
@@ -24,7 +34,7 @@ class Session:
         last_username: str,
         last_password: str,
         expire_date_time: str,
-    ):
+    ) -> None:
         self.last_username = last_username
         self.last_password = last_password
         self.expire_date_time = expire_date_time
@@ -56,10 +66,10 @@ class Session:
                 return f"{days}d {hours}h restantes"
             minutes = (remaining.seconds % 3600) // 60
             return f"{hours}h {minutes}m restantes"
-        except Exception:
+        except (ValueError, TypeError):
             return "desconhecido"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Serializa os dados da sessão no dicionário exigido."""
         return {
             "last_username": self.last_username,
@@ -118,7 +128,7 @@ class Session:
                 expire_date_time=data.get("expire_date_time", ""),
             )
             return session
-        except Exception:
+        except (KeyError, ValueError, json.JSONDecodeError, OSError, StorageError):
             return None
 
     @classmethod
