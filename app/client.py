@@ -318,6 +318,7 @@ class HomelabClient:
         timeout: Optional[float] = None,
         session: Optional[Session] = None,
         session_path: Optional[Union[Path, str]] = None,
+        control_conn: Optional[ControlConnection] = None,
         env_file: Optional[Union[Path, str]] = None,
     ) -> None:
         if config is not None:
@@ -342,7 +343,7 @@ class HomelabClient:
         if self.session is None and self.config.session_path.is_file():
             self.session = Session.load(path=self.config.session_path)
 
-        self.control_conn = None
+        self.control_conn = control_conn
         self.username = self.session.last_username if (self.session and self.session.is_valid()) else None
         self.secret_hash = self.session.last_password if (self.session and self.session.is_valid()) else None
 
@@ -573,9 +574,11 @@ def do_login_request(
     port: int,
     username: str,
     secret_hash: str,
-    conn: Optional[ControlConnection] = None,
+    conn: Optional[Union[ControlConnection, HomelabClient]] = None,
 ) -> Tuple[bool, str]:
     """Envia requisição de autenticação para o servidor (via conexão persistente ou pontual)."""
+    if isinstance(conn, HomelabClient):
+        return conn.login(username, secret_hash, is_already_derived=True)
     if conn is not None:
         return conn.login(username, secret_hash)
 
@@ -597,9 +600,11 @@ def do_register_request(
     port: int,
     username: str,
     secret_hash: str,
-    conn: Optional[ControlConnection] = None,
+    conn: Optional[Union[ControlConnection, HomelabClient]] = None,
 ) -> Tuple[bool, str]:
     """Envia requisição de cadastro explícito para o servidor (via conexão persistente ou pontual)."""
+    if isinstance(conn, HomelabClient):
+        return conn.register(username, secret_hash, is_already_derived=True)
     if conn is not None:
         return conn.register(username, secret_hash)
 
@@ -622,9 +627,16 @@ def send_user_message(
     username: str,
     secret_hash: str,
     text: str,
-    conn: Optional[ControlConnection] = None,
+    conn: Optional[Union[ControlConnection, HomelabClient]] = None,
 ) -> bool:
     """Envia uma mensagem de texto autenticada ao servidor (via conexão persistente ou pontual)."""
+    if isinstance(conn, HomelabClient):
+        ok, msg = conn.send_message(text)
+        if ok:
+            print(f"[<] Resposta do servidor: {msg}")
+            return True
+        print(f"[!] Erro retornado pelo servidor: {msg}", file=sys.stderr)
+        return False
     if conn is not None:
         return conn.send_text(username, text, secret_hash=secret_hash)
 
@@ -648,9 +660,10 @@ def send_user_message(
 
 
 def run_auth_flow(
-    host: str,
-    port: int,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
     conn: Optional[ControlConnection] = None,
+    client: Optional[HomelabClient] = None,
 ) -> Optional[Tuple[str, str]]:
     """
     Executa a interface de terminal para Login ou Cadastro:
@@ -659,6 +672,9 @@ def run_auth_flow(
     3. Sair
     Retorna tupla (username, secret_hash) em caso de sucesso ou None.
     """
+    if client is None:
+        client = HomelabClient(host=host, control_port=port, control_conn=conn)
+
     while True:
         print("\n" + "=" * 55)
         print("          HOMELAB TCP CLIENT - ACESSO")
@@ -675,7 +691,7 @@ def run_auth_flow(
             return None
 
         if choice == "1":
-            session = Session.load()
+            session = client.session or Session.load(path=client.config.session_path)
             if session and session.is_valid():
                 prompt_text = (
                     f"\n[?] Quick login disponível para '{session.last_username}' "
@@ -688,22 +704,15 @@ def run_auth_flow(
 
                 if accept in ("", "s", "sim", "y", "yes"):
                     print(f"[*] Autenticando com Quick Login como '{session.last_username}'...")
-                    ok, reason = do_login_request(
-                        host, port, session.last_username, session.last_password, conn=conn
-                    )
+                    ok, reason = client.login(session.last_username)
                     if ok:
                         print(f"[✓] Quick login aceito com sucesso! Bem-vindo, {session.last_username}.")
-                        Session.create(
-                            session.last_username,
-                            session.last_password,
-                            is_already_derived=True,
-                            days=Session.DEFAULT_TTL_DAYS,
-                        ).save()
                         return session.last_username, session.last_password
                     else:
                         print(f"[!] Falha no Quick Login: {reason}")
                         print("[*] Limpando sessão local inválida...")
-                        Session.clear()
+                        Session.clear(path=client.config.session_path)
+                        client.session = None
 
             print("\n--- 1.2.2 Identificação de Usuário ---")
             try:
@@ -715,17 +724,10 @@ def run_auth_flow(
             except (KeyboardInterrupt, EOFError):
                 return None
 
-            secret_hash = Session.derive_secret(username, password)
-            ok, reason = do_login_request(host, port, username, secret_hash, conn=conn)
+            ok, reason = client.login(username, password)
             if ok:
                 print(f"[✓] Login realizado com sucesso! Bem-vindo, {username}.")
-                Session.create(
-                    username,
-                    secret_hash,
-                    is_already_derived=True,
-                    days=Session.DEFAULT_TTL_DAYS,
-                ).save()
-                return username, secret_hash
+                return username, client.secret_hash or ""
             else:
                 print(f"[!] Falha no login: {reason}")
 
@@ -747,20 +749,13 @@ def run_auth_flow(
             except (KeyboardInterrupt, EOFError):
                 return None
 
-            secret_hash = Session.derive_secret(username, password)
-            ok, reason = do_register_request(host, port, username, secret_hash, conn=conn)
+            ok, reason = client.register(username, password)
             if ok:
                 print(f"[✓] Conta '{username}' criada com sucesso!")
                 print(
                     f"[✓] Auto-login ativado: Sessão local gravada com validade de {Session.DEFAULT_TTL_DAYS} dias."
                 )
-                Session.create(
-                    username,
-                    secret_hash,
-                    is_already_derived=True,
-                    days=Session.DEFAULT_TTL_DAYS,
-                ).save()
-                return username, secret_hash
+                return username, client.secret_hash or ""
             else:
                 print(f"[!] Erro no cadastro: {reason}")
 
@@ -769,6 +764,45 @@ def run_auth_flow(
             return None
         else:
             print("[!] Opção inválida. Digite 1, 2 ou 3.")
+
+
+def interactive_menu(client: HomelabClient) -> None:
+    """Interface interativa de terminal (CLI) desacoplada da camada de rede."""
+    username = client.username or "cliente"
+    print(f"\n[*] Conexão TCP Persistente ativa para '{username}' (HMAC-SHA256 dinâmico).")
+    print("[*] Digite sua mensagem ou use '/upload <caminho_do_arquivo>' para enviar mídia em chunks.")
+    print("[*] Digite 'sair' ou Ctrl+C para encerrar.\n")
+
+    while True:
+        try:
+            user_input = input(f"[{username}] > ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n[*] Sessão interativa finalizada.")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("sair", "exit", "quit"):
+            print("[*] Sessão encerrada pelo usuário.")
+            break
+
+        if user_input.startswith("/upload "):
+            raw_path = user_input[len("/upload ") :].strip()
+            if not raw_path:
+                print("[!] Informe o caminho do arquivo. Exemplo: /upload foto.png")
+                continue
+            ok, msg = client.upload_file(raw_path)
+            if ok:
+                print(f"[✓] {msg}")
+            else:
+                print(f"[!] Erro no upload: {msg}", file=sys.stderr)
+            continue
+
+        ok, msg = client.send_message(user_input)
+        if ok:
+            print(f"[<] Resposta do servidor: {msg}")
+        else:
+            print(f"[!] Erro retornado pelo servidor: {msg}", file=sys.stderr)
 
 
 def main() -> None:
@@ -822,64 +856,38 @@ def main() -> None:
 
     args = parser.parse_args(remaining_argv)
 
-    with ControlConnection(host=args.host, port=args.port, timeout=cfg.timeout) as conn:
-        auth_credentials = run_auth_flow(host=args.host, port=args.port, conn=conn)
+    cfg.host = args.host
+    cfg.control_port = args.port
+    cfg.data_port = args.data_port
+
+    with HomelabClient(config=cfg) as client:
+        auth_credentials = run_auth_flow(client=client)
         if not auth_credentials:
             sys.exit(0)
 
         username, secret_hash = auth_credentials
 
         if args.message:
-            success = send_user_message(
-                host=args.host,
-                port=args.port,
-                username=username,
-                secret_hash=secret_hash,
-                text=args.message,
-                conn=conn,
-            )
+            ok, msg = client.send_message(args.message)
+            if ok:
+                print(f"[<] Resposta do servidor: {msg}")
+            else:
+                print(f"[!] Erro retornado pelo servidor: {msg}", file=sys.stderr)
             if not args.upload:
-                sys.exit(0 if success else 1)
+                sys.exit(0 if ok else 1)
 
         if args.upload:
-            ok, _ = conn.upload_file(args.upload, data_port=args.data_port, secret_hash=secret_hash)
+            ok, msg = client.upload_file(args.upload)
+            if ok:
+                print(f"[✓] {msg}")
+            else:
+                print(f"[!] Erro no upload: {msg}", file=sys.stderr)
             sys.exit(0 if ok else 1)
 
-        print(f"\n[*] Conexão TCP Persistente ativa para '{username}' (HMAC-SHA256 dinâmico).")
-        print("[*] Digite sua mensagem ou use '/upload <caminho_do_arquivo>' para enviar mídia em chunks.")
-        print("[*] Digite 'sair' ou Ctrl+C para encerrar.\n")
-
-        while True:
-            try:
-                user_input = input(f"[{username}] > ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print("\n[*] Sessão interativa finalizada.")
-                break
-
-            if not user_input:
-                continue
-            if user_input.lower() in ("sair", "exit", "quit"):
-                print("[*] Sessão encerrada pelo usuário.")
-                break
-
-            if user_input.startswith("/upload "):
-                raw_path = user_input[len("/upload ") :].strip()
-                if not raw_path:
-                    print("[!] Informe o caminho do arquivo. Exemplo: /upload foto.png")
-                    continue
-                conn.upload_file(Path(raw_path), data_port=args.data_port, secret_hash=secret_hash)
-                continue
-
-            send_user_message(
-                host=args.host,
-                port=args.port,
-                username=username,
-                secret_hash=secret_hash,
-                text=user_input,
-                conn=conn,
-            )
+        interactive_menu(client)
 
     sys.exit(0)
+
 
 
 if __name__ == "__main__":
