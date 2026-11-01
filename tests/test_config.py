@@ -36,11 +36,20 @@ class TestConfigManagement(unittest.TestCase):
         os.environ.clear()
         os.environ.update(self._orig_env)
 
-    def test_sample_files_exist_in_repo_root(self):
-        """Garante que os arquivos .sample existam e estejam na raiz do projeto."""
-        self.assertTrue((REPO_ROOT / "server.env.sample").is_file(), "server.env.sample deve existir na raiz.")
-        self.assertTrue((REPO_ROOT / "client.env.sample").is_file(), "client.env.sample deve existir na raiz.")
-        self.assertTrue((REPO_ROOT / ".env.sample").is_file(), ".env.sample deve existir na raiz.")
+    def test_sample_files_exist_in_envs_dir(self):
+        """Garante que os arquivos .sample existam e estejam na pasta envs/."""
+        self.assertTrue((REPO_ROOT / "envs" / "server.env.sample").is_file(), "server.env.sample deve existir em envs/.")
+        self.assertTrue((REPO_ROOT / "envs" / "client.env.sample").is_file(), "client.env.sample deve existir em envs/.")
+        self.assertTrue((REPO_ROOT / "envs" / ".env.sample").is_file(), ".env.sample deve existir em envs/.")
+
+    def test_default_loader_discovers_envs_directory(self):
+        """Verifica se os loaders encontram automaticamente os arquivos em envs/."""
+        s_cfg = load_server_config()
+        c_cfg = load_client_config()
+        self.assertIsNotNone(s_cfg.source_file)
+        self.assertTrue(str(s_cfg.source_file).endswith("envs/server.env"))
+        self.assertIsNotNone(c_cfg.source_file)
+        self.assertTrue(str(c_cfg.source_file).endswith("envs/client.env"))
 
     def test_server_config_defaults(self):
         """Verifica se os valores padrão do servidor são seguros e válidos."""

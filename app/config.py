@@ -200,12 +200,12 @@ def load_server_config(
     Carrega as configurações do Servidor.
     Busca na seguinte ordem de precedência:
       1. Arquivo explícito (env_file)
-      2. server.env na raiz
-      3. .env na raiz
+      2. envs/server.env (ou server.env)
+      3. envs/.env (ou .env)
       4. Variáveis de ambiente do SO (os.environ)
       5. Valores padrão seguros em código
     """
-    resolved_env = _resolve_env_file(env_file, ["server.env", ".env"])
+    resolved_env = _resolve_env_file(env_file, ["envs/server.env", "envs/.env", "server.env", ".env"])
     _load_env_if_present(resolved_env, override=override)
 
     # Defaults padrão da aplicação
@@ -239,12 +239,12 @@ def load_client_config(
     Carrega as configurações do Cliente.
     Busca na seguinte ordem de precedência:
       1. Arquivo explícito (env_file)
-      2. client.env na raiz
-      3. .env na raiz
+      2. envs/client.env (ou client.env)
+      3. envs/.env (ou .env)
       4. Variáveis de ambiente do SO (os.environ)
       5. Valores padrão seguros em código
     """
-    resolved_env = _resolve_env_file(env_file, ["client.env", ".env"])
+    resolved_env = _resolve_env_file(env_file, ["envs/client.env", "envs/.env", "client.env", ".env"])
     _load_env_if_present(resolved_env, override=override)
 
     # Fallback de host: se HOMELAB_CLIENT_TARGET_HOST não estiver definido, verifica HOMELAB_SERVER_HOST

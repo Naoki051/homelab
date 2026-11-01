@@ -667,7 +667,7 @@ def main() -> None:
         "--env-file",
         type=str,
         default=pre_args.env_file,
-        help="Caminho para arquivo de variáveis de ambiente customizado (ex: server.env, .env.prod)",
+        help="Caminho para arquivo de variáveis de ambiente customizado (ex: envs/server.env, envs/.env.prod)",
     )
     parser.add_argument(
         "--host",

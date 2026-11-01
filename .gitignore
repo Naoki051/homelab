@@ -27,8 +27,15 @@ app/data/*.json
 .env.*
 server.env
 client.env
+envs/*.env
+envs/.env
+envs/.env.*
+envs/server.env
+envs/client.env
 !*.sample
 !*.env.sample
+!envs/*.sample
+!envs/*.env.sample
 
 # Operating System Files
 .DS_Store
