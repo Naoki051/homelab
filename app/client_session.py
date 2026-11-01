@@ -10,7 +10,17 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Optional
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from app.exceptions import StorageError
+except ImportError:
+    from exceptions import StorageError
 
 
 class Session:
@@ -56,7 +66,7 @@ class Session:
                 return f"{days}d {hours}h restantes"
             minutes = (remaining.seconds % 3600) // 60
             return f"{hours}h {minutes}m restantes"
-        except Exception:
+        except (ValueError, TypeError):
             return "desconhecido"
 
     def to_dict(self) -> dict:
@@ -118,7 +128,7 @@ class Session:
                 expire_date_time=data.get("expire_date_time", ""),
             )
             return session
-        except Exception:
+        except (KeyError, ValueError, json.JSONDecodeError, OSError, StorageError):
             return None
 
     @classmethod
