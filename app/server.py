@@ -5,6 +5,7 @@ Servidor TCP Dual-Channel para Homelab com Autenticação, Framing Binário, Chu
 - Canal de Dados/Mídia (Porta 9001): Recepção de arquivos pesados em Chunks indexados de 64KB (62B header) com streaming direto para disco.
 """
 
+from abc import ABC, abstractmethod
 import argparse
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -510,6 +511,213 @@ def handle_data_client_connection(
             client_socket.close()
         except Exception:
             pass
+
+
+class BaseNetworkService(ABC):
+    """Classe base abstrata para serviços de rede TCP no Homelab."""
+
+    def __init__(self, host: str, port: int) -> None:
+        self.host: str = host
+        self.port: int = port
+        self.socket: Optional[socket.socket] = None
+        self.is_running: bool = False
+        self._thread: Optional[threading.Thread] = None
+
+    @abstractmethod
+    def start(self) -> None:
+        """Inicia o serviço de rede e seu loop de escuta."""
+        pass
+
+    @abstractmethod
+    def stop(self) -> None:
+        """Encerra o serviço de rede e libera recursos alocados."""
+        pass
+
+
+class ControlServer(BaseNetworkService):
+    """Servidor TCP para o Canal de Controle (Porta 9000).
+
+    Encapsula o listener TCP, enquadramento binário de 40B, autenticação PBKDF2,
+    sessões HMAC dinâmicas e processamento de mensagens.
+    """
+
+    def __init__(
+        self,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        repo: Optional[ClientRepository] = None,
+        log_path: Path = DEFAULT_LOG_PATH,
+        ticket_manager: Optional[UploadTicketManager] = None,
+        data_port: int = DEFAULT_DATA_PORT,
+        db_path: Path = DEFAULT_DB_PATH,
+        uploads_dir: Path = DEFAULT_UPLOADS_DIR,
+    ) -> None:
+        super().__init__(host=host, port=port)
+        self.db_path = db_path
+        self.uploads_dir = uploads_dir
+        self.repo = repo if repo is not None else ClientRepository(db_path=self.db_path)
+        self.ticket_manager = (
+            ticket_manager
+            if ticket_manager is not None
+            else UploadTicketManager(uploads_dir=self.uploads_dir)
+        )
+        self.log_path = log_path
+        self.data_port = data_port
+
+    def bind_and_listen(self, backlog: int = 16) -> None:
+        """Vincula o socket de controle e coloca em modo de escuta."""
+        if self.socket is not None:
+            return
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.bind((self.host, self.port))
+        self.socket.listen(backlog)
+        self.port = self.socket.getsockname()[1]
+        self.is_running = True
+
+    def start(self) -> None:
+        """Inicia o listener de controle em thread de segundo plano."""
+        if self.is_running and self._thread is not None and self._thread.is_alive():
+            return
+        if self.socket is None:
+            self.bind_and_listen()
+        self.is_running = True
+        self._thread = threading.Thread(target=self._accept_loop, daemon=True)
+        self._thread.start()
+
+    def _accept_loop(self) -> None:
+        """Loop de aceitação de conexões de clientes de controle."""
+        while self.is_running:
+            try:
+                if self.socket is None:
+                    break
+                client_sock, client_addr = self.socket.accept()
+                if not self.is_running:
+                    client_sock.close()
+                    break
+                client_ip, client_port = client_addr
+                print(f"[+] Conexão de controle aceita de {client_ip}:{client_port}")
+                t = threading.Thread(
+                    target=self.handle_connection,
+                    args=(client_sock, client_addr),
+                    daemon=True,
+                )
+                t.start()
+            except OSError:
+                break
+
+    def handle_connection(
+        self,
+        client_sock: socket.socket,
+        client_addr: Tuple[str, int],
+    ) -> None:
+        """Processa a conexão de um cliente de controle."""
+        handle_control_client_connection(
+            client_socket=client_sock,
+            client_address=client_addr,
+            repo=self.repo,
+            log_path=self.log_path,
+            ticket_manager=self.ticket_manager,
+            data_port=self.data_port,
+        )
+
+    def stop(self) -> None:
+        """Encerra o socket de controle e para o loop de aceitação."""
+        self.is_running = False
+        if self.socket is not None:
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self.socket = None
+
+
+class DataServer(BaseNetworkService):
+    """Servidor TCP para o Canal de Dados/Mídia (Porta 9001).
+
+    Encapsula o listener TCP, recepção de chunks indexados de 64KB (cabeçalho 62B),
+    validação de integridade SHA-256 e streaming direto para disco.
+    """
+
+    def __init__(
+        self,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_DATA_PORT,
+        ticket_manager: Optional[UploadTicketManager] = None,
+        log_path: Path = DEFAULT_LOG_PATH,
+        uploads_dir: Path = DEFAULT_UPLOADS_DIR,
+    ) -> None:
+        super().__init__(host=host, port=port)
+        self.uploads_dir = uploads_dir
+        self.ticket_manager = (
+            ticket_manager
+            if ticket_manager is not None
+            else UploadTicketManager(uploads_dir=self.uploads_dir)
+        )
+        self.log_path = log_path
+
+    def bind_and_listen(self, backlog: int = 16) -> None:
+        """Vincula o socket de dados e coloca em modo de escuta."""
+        if self.socket is not None:
+            return
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.bind((self.host, self.port))
+        self.socket.listen(backlog)
+        self.port = self.socket.getsockname()[1]
+        self.is_running = True
+
+    def start(self) -> None:
+        """Inicia o listener de dados em thread de segundo plano."""
+        if self.is_running and self._thread is not None and self._thread.is_alive():
+            return
+        if self.socket is None:
+            self.bind_and_listen()
+        self.is_running = True
+        self._thread = threading.Thread(target=self._accept_loop, daemon=True)
+        self._thread.start()
+
+    def _accept_loop(self) -> None:
+        """Loop de aceitação de conexões de upload de dados."""
+        while self.is_running:
+            try:
+                if self.socket is None:
+                    break
+                client_sock, client_addr = self.socket.accept()
+                if not self.is_running:
+                    client_sock.close()
+                    break
+                t = threading.Thread(
+                    target=self.handle_chunk_stream,
+                    args=(client_sock, client_addr),
+                    daemon=True,
+                )
+                t.start()
+            except OSError:
+                break
+
+    def handle_chunk_stream(
+        self,
+        client_sock: socket.socket,
+        client_addr: Tuple[str, int],
+    ) -> None:
+        """Processa a transferência de chunks de mídia."""
+        handle_data_client_connection(
+            client_socket=client_sock,
+            client_address=client_addr,
+            ticket_manager=self.ticket_manager,
+            log_path=self.log_path,
+        )
+
+    def stop(self) -> None:
+        """Encerra o socket de dados e para o loop de aceitação."""
+        self.is_running = False
+        if self.socket is not None:
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self.socket = None
 
 
 class DualChannelServer:
