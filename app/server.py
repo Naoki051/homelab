@@ -33,7 +33,10 @@ try:
         HomelabError,
         ProtocolError,
         StorageError,
+        mask_password,
+        mask_secret,
     )
+    from app.logging import get_logger
     from app.protocol import (
         CHUNK_SIZE,
         CONTROL_MAGIC,
@@ -52,7 +55,10 @@ except ImportError:
         HomelabError,
         ProtocolError,
         StorageError,
+        mask_password,
+        mask_secret,
     )
+    from logging_compat import get_logger  # type: ignore
     from protocol import (
         CHUNK_SIZE,
         CONTROL_MAGIC,
@@ -62,6 +68,8 @@ except ImportError:
         generate_session_key,
         generate_upload_ticket,
     )
+
+logger = get_logger(__name__)
 
 _initial_server_config = load_server_config()
 DEFAULT_HOST = _initial_server_config.host
@@ -189,12 +197,21 @@ def process_control_message(
     password = payload.get("password", "")
 
     if action == Message.ACTION_REGISTER:
-        print(f"[*] Requisição de registro para o usuário '{username}' de {client_ip}:{client_port}")
+        logger.info(
+            "Requisição de registro para o usuário '%s' de %s:%s",
+            username,
+            client_ip,
+            client_port,
+        )
         ok, reason, _ = repo.register(username, password)
         if ok:
             repo.update_status(username, "online")
             new_session_key = generate_session_key()
-            print(f"[+] Usuário '{username}' registrado com sucesso! Chave de sessão HMAC emitida.")
+            logger.info(
+                "Usuário '%s' registrado com sucesso! Chave de sessão HMAC emitida (%s).",
+                username,
+                mask_secret(new_session_key),
+            )
             resp = Message.response(
                 Message.STATUS_OK,
                 reason,
@@ -206,17 +223,25 @@ def process_control_message(
             )
             return resp, username, new_session_key
         else:
-            print(f"[!] Falha no registro do usuário '{username}': {reason}")
+            logger.warning("Falha no registro do usuário '%s': %s", username, reason)
             resp = Message.response(Message.STATUS_ERROR, reason)
             return resp, authenticated_user, session_key
 
     elif action == Message.ACTION_LOGIN:
-        print(f"[*] Tentativa de login do usuário '{username}' de {client_ip}:{client_port}")
+        logger.info(
+            "Tentativa de login do usuário '%s' de %s:%s",
+            username,
+            client_ip,
+            client_port,
+        )
         ok, reason, _ = repo.authenticate(username, password)
         if ok:
             repo.update_status(username, "online")
             new_session_key = generate_session_key()
-            print(f"[+] Usuário '{username}' autenticado com sucesso! Status: online")
+            logger.info(
+                "Usuário '%s' autenticado com sucesso! Status: online",
+                username,
+            )
             resp = Message.response(
                 Message.STATUS_OK,
                 reason,
@@ -228,13 +253,18 @@ def process_control_message(
             )
             return resp, username, new_session_key
         else:
-            print(f"[!] Login rejeitado para '{username}': {reason}")
+            logger.warning("Login rejeitado para '%s': %s", username, reason)
             resp = Message.response(Message.STATUS_ERROR, reason)
             return resp, authenticated_user, session_key
 
     elif action == Message.ACTION_SEND:
         text = payload.get("text", "").strip()
-        print(f"[*] Envio de mensagem autenticada por '{username}' de {client_ip}:{client_port}")
+        logger.info(
+            "Envio de mensagem autenticada por '%s' de %s:%s",
+            username,
+            client_ip,
+            client_port,
+        )
 
         # Se a conexão já está autenticada via sessão persistente + HMAC válido, evita re-hash PBKDF2
         if authenticated_user and username == authenticated_user:
@@ -243,13 +273,13 @@ def process_control_message(
             auth_ok, reason, _ = repo.authenticate(username, password)
 
         if not auth_ok:
-            print(f"[!] Mensagem de '{username}' rejeitada: {reason}")
+            logger.warning("Mensagem de '%s' rejeitada: %s", username, reason)
             resp = Message.response(Message.STATUS_ERROR, f"Autenticação requerida: {reason}")
             return resp, authenticated_user, session_key
 
         repo.update_status(username, "online")
         log_message(log_path, client_address, text, username=username)
-        print(f"[✓] Mensagem de '{username}' salva no log: {text}")
+        logger.info("Mensagem de '%s' salva no log: %s", username, text)
 
         resp = Message.response(
             Message.STATUS_OK,
@@ -287,9 +317,13 @@ def process_control_message(
             session_key=session_key,
             expected_sha256=expected_sha256,
         )
-        print(
-            f"[*] Ticket de upload '{ticket.ticket_hex[:8]}...' emitido para '{username}' "
-            f"({ticket.filename}, {file_size} bytes, {ticket.total_chunks} chunks)"
+        logger.info(
+            "Ticket de upload '%s' emitido para '%s' (%s, %d bytes, %d chunks)",
+            mask_secret(ticket.ticket_hex),
+            username,
+            ticket.filename,
+            file_size,
+            ticket.total_chunks,
         )
         resp = Message.response(
             Message.STATUS_OK,
@@ -331,7 +365,7 @@ def handle_client_payload(
         msg = Message.from_bytes(raw_data)
     except (ProtocolError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
         raw_text = raw_data.decode("utf-8", errors="replace").strip()
-        print(f"[>] Mensagem em texto puro recebida de {client_ip}:{client_port}: {raw_text}")
+        logger.info("Mensagem em texto puro recebida de %s:%s: %s", client_ip, client_port, raw_text)
         log_message(log_path, client_address, raw_text)
         ack = f"ACK: Mensagem recebida pelo servidor ({datetime.now().strftime('%H:%M:%S')})\n"
         return ack.encode("utf-8"), None
@@ -434,7 +468,7 @@ def handle_control_client_connection(
         OSError,
         ValueError,
     ) as e:
-        print(f"[!] Erro no Canal de Controle ({client_ip}:{client_port}) -> {e}")
+        logger.error("Erro no Canal de Controle (%s:%s) -> %s", client_ip, client_port, e)
     finally:
         if active_username:
             repo.update_status(active_username, "offline")
@@ -442,7 +476,7 @@ def handle_control_client_connection(
             client_socket.close()
         except OSError:
             pass
-        print(f"[-] Conexão de controle encerrada com {client_ip}:{client_port}")
+        logger.info("Conexão de controle encerrada com %s:%s", client_ip, client_port)
 
 
 def handle_data_client_connection(
@@ -505,9 +539,12 @@ def handle_data_client_connection(
                     f"{ticket.total_chunks} chunks, sha256={actual_sha256[:12]}...)",
                     username=ticket.username,
                 )
-                print(
-                    f"[✓] Upload concluído para '{ticket.username}': {ticket.dest_path.name} "
-                    f"({ticket.total_chunks} chunks)"
+                logger.info(
+                    "Upload concluído para '%s': %s (%d chunks, sha256=%s)",
+                    ticket.username,
+                    ticket.dest_path.name,
+                    ticket.total_chunks,
+                    mask_secret(actual_sha256),
                 )
                 ok_resp = Message.response(
                     Message.STATUS_OK,
@@ -534,7 +571,7 @@ def handle_data_client_connection(
         OSError,
         ValueError,
     ) as e:
-        print(f"[!] Erro no Canal de Dados ({client_ip}:{client_port}) -> {e}")
+        logger.error("Erro no Canal de Dados (%s:%s) -> %s", client_ip, client_port, e)
         if current_ticket:
             try:
                 err_resp = Message.response(Message.STATUS_ERROR, f"Falha no upload: {e}")
@@ -639,7 +676,7 @@ class ControlServer(BaseNetworkService):
                 client_sock.close()
                 break
             client_ip, client_port = client_addr
-            print(f"[+] Conexão de controle aceita de {client_ip}:{client_port}")
+            logger.info("Conexão de controle aceita de %s:%s", client_ip, client_port)
             t = threading.Thread(
                 target=self._handle_client_thread,
                 args=(client_sock, client_addr),
@@ -906,24 +943,24 @@ class HomelabServer:
     def serve_forever(self) -> None:
         """Inicia o servidor e bloqueia a thread principal até encerramento."""
         self.start()
-        print("=" * 65)
-        print("[*] Servidor TCP Dual-Protocol Homelab iniciado com sucesso!")
-        print(f"[*] Canal 1 (Controle Persistente + Framing): {self.host}:{self.control_port}")
-        print(f"[*] Canal 2 (Dados/Mídia em Chunks 64KB):     {self.host}:{self.data_port}")
-        print(f"[*] Banco de dados SQLite: {self.db_path}")
-        print(f"[*] Diretório de uploads:  {self.uploads_dir}")
-        print(f"[*] Arquivo de log:        {self.log_path}")
-        print("[*] Pressione Ctrl+C para encerrar.")
-        print("=" * 65)
+        logger.info("=" * 65)
+        logger.info("Servidor TCP Dual-Protocol Homelab iniciado com sucesso!")
+        logger.info("Canal 1 (Controle Persistente + Framing): %s:%s", self.host, self.control_port)
+        logger.info("Canal 2 (Dados/Mídia em Chunks 64KB):     %s:%s", self.host, self.data_port)
+        logger.info("Banco de dados SQLite: %s", self.db_path)
+        logger.info("Diretório de uploads:  %s", self.uploads_dir)
+        logger.info("Arquivo de log:        %s", self.log_path)
+        logger.info("Pressione Ctrl+C para encerrar.")
+        logger.info("=" * 65)
 
         try:
             while self.is_running:
                 threading.Event().wait(0.5)
         except KeyboardInterrupt:
-            print("\n[*] Servidor interrompido pelo usuário (SIGINT). Encerrando...")
+            logger.info("Servidor interrompido pelo usuário (SIGINT). Encerrando...")
         finally:
             self.stop()
-            print("[*] Sockets do servidor finalizados com sucesso.")
+            logger.info("Sockets do servidor finalizados com sucesso.")
 
     def stop(self) -> None:
         """Encerra ambos os serviços de controle e dados."""
