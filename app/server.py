@@ -720,8 +720,12 @@ class DataServer(BaseNetworkService):
             self.socket = None
 
 
-class DualChannelServer:
-    """Gerencia o ciclo de vida dos sockets de Controle (Porta 9000) e de Dados (Porta 9001)."""
+class HomelabServer:
+    """Orquestrador da Arquitetura Dual-Channel do Homelab.
+
+    Compõe e gerencia o ciclo de vida conjunto do Canal de Controle (ControlServer)
+    e do Canal de Dados (DataServer), provendo suporte a Context Manager.
+    """
 
     def __init__(
         self,
@@ -731,85 +735,106 @@ class DualChannelServer:
         log_path: Path = DEFAULT_LOG_PATH,
         db_path: Path = DEFAULT_DB_PATH,
         uploads_dir: Path = DEFAULT_UPLOADS_DIR,
-    ):
-        self.host = host
-        self.control_port = control_port
-        self.data_port = data_port
-        self.log_path = log_path
+        config: Optional[ServerConfig] = None,
+    ) -> None:
+        if config is not None:
+            host = config.host
+            control_port = config.control_port
+            data_port = config.data_port
+            log_path = config.log_path
+            db_path = config.db_path
+            uploads_dir = config.uploads_dir
+
         self.db_path = db_path
         self.uploads_dir = uploads_dir
-
+        self.log_path = log_path
         self.repo = ClientRepository(db_path=self.db_path)
         self.ticket_manager = UploadTicketManager(uploads_dir=self.uploads_dir)
 
-        self.control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.control_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.control_server = ControlServer(
+            host=host,
+            port=control_port,
+            repo=self.repo,
+            log_path=self.log_path,
+            ticket_manager=self.ticket_manager,
+            data_port=data_port,
+            db_path=self.db_path,
+            uploads_dir=self.uploads_dir,
+        )
+        self.data_server = DataServer(
+            host=host,
+            port=data_port,
+            ticket_manager=self.ticket_manager,
+            log_path=self.log_path,
+            uploads_dir=self.uploads_dir,
+        )
+        self.is_running = False
 
-        self.data_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.data_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    @property
+    def host(self) -> str:
+        return self.control_server.host
 
-        self.running = False
+    @property
+    def control_port(self) -> int:
+        return self.control_server.port
+
+    @control_port.setter
+    def control_port(self, val: int) -> None:
+        self.control_server.port = val
+
+    @property
+    def data_port(self) -> int:
+        return self.data_server.port
+
+    @data_port.setter
+    def data_port(self, val: int) -> None:
+        self.data_server.port = val
+
+    @property
+    def control_socket(self) -> Optional[socket.socket]:
+        return self.control_server.socket
+
+    @property
+    def data_socket(self) -> Optional[socket.socket]:
+        return self.data_server.socket
+
+    @property
+    def running(self) -> bool:
+        return self.is_running
+
+    @running.setter
+    def running(self, val: bool) -> None:
+        self.is_running = val
 
     def bind_and_listen(self, backlog: int = 16) -> None:
-        self.control_socket.bind((self.host, self.control_port))
-        self.control_socket.listen(backlog)
-        self.control_port = self.control_socket.getsockname()[1]
+        """Vincula os sockets de controle e dados preparando para aceitação."""
+        self.data_server.bind_and_listen(backlog=backlog)
+        self.control_server.data_port = self.data_server.port
+        self.control_server.bind_and_listen(backlog=backlog)
+        self.is_running = True
 
-        self.data_socket.bind((self.host, self.data_port))
-        self.data_socket.listen(backlog)
-        self.data_port = self.data_socket.getsockname()[1]
-        self.running = True
-
-    def _accept_data_loop(self) -> None:
-        while self.running:
-            try:
-                client_sock, client_addr = self.data_socket.accept()
-                if not self.running:
-                    client_sock.close()
-                    break
-                t = threading.Thread(
-                    target=handle_data_client_connection,
-                    args=(client_sock, client_addr, self.ticket_manager, self.log_path),
-                    daemon=True,
-                )
-                t.start()
-            except OSError:
-                break
-
-    def _accept_control_loop(self) -> None:
-        while self.running:
-            try:
-                client_sock, client_addr = self.control_socket.accept()
-                if not self.running:
-                    client_sock.close()
-                    break
-                client_ip, client_port = client_addr
-                print(f"[+] Conexão de controle aceita de {client_ip}:{client_port}")
-                t = threading.Thread(
-                    target=handle_control_client_connection,
-                    args=(
-                        client_sock,
-                        client_addr,
-                        self.repo,
-                        self.log_path,
-                        self.ticket_manager,
-                        self.data_port,
-                    ),
-                    daemon=True,
-                )
-                t.start()
-            except OSError:
-                break
+    def start(self) -> None:
+        """Inicia os serviços de dados e controle em segundo plano."""
+        if self.is_running:
+            return
+        self.data_server.start()
+        self.control_server.data_port = self.data_server.port
+        self.control_server.start()
+        self.is_running = True
 
     def start_in_background(self) -> None:
-        """Inicia os loops de aceitação de Controle e Dados em threads de segundo plano."""
-        self.bind_and_listen()
-        threading.Thread(target=self._accept_data_loop, daemon=True).start()
-        threading.Thread(target=self._accept_control_loop, daemon=True).start()
+        """Facade retrocompatível para inicialização em segundo plano."""
+        self.start()
+
+    def _accept_data_loop(self) -> None:
+        self.data_server._accept_loop()
+
+    def _accept_control_loop(self) -> None:
+        self.control_server._accept_loop()
 
     def serve_forever(self) -> None:
-        """Inicia o servidor bloqueando a thread principal no loop de Controle."""
-        self.bind_and_listen()
+        """Inicia o servidor e bloqueia a thread principal até encerramento."""
+        self.start()
         print("=" * 65)
         print("[*] Servidor TCP Dual-Protocol Homelab iniciado com sucesso!")
         print(f"[*] Canal 1 (Controle Persistente + Framing): {self.host}:{self.control_port}")
@@ -820,11 +845,9 @@ class DualChannelServer:
         print("[*] Pressione Ctrl+C para encerrar.")
         print("=" * 65)
 
-        data_thread = threading.Thread(target=self._accept_data_loop, daemon=True)
-        data_thread.start()
-
         try:
-            self._accept_control_loop()
+            while self.is_running:
+                threading.Event().wait(0.5)
         except KeyboardInterrupt:
             print("\n[*] Servidor interrompido pelo usuário (SIGINT). Encerrando...")
         finally:
@@ -832,12 +855,27 @@ class DualChannelServer:
             print("[*] Sockets do servidor finalizados com sucesso.")
 
     def stop(self) -> None:
-        self.running = False
-        for sock in (self.control_socket, self.data_socket):
-            try:
-                sock.close()
-            except Exception:
-                pass
+        """Encerra ambos os serviços de controle e dados."""
+        self.is_running = False
+        self.control_server.stop()
+        self.data_server.stop()
+
+    def __enter__(self) -> "HomelabServer":
+        self.start()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[type],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[object],
+    ) -> None:
+        self.stop()
+
+
+# Facades retrocompatíveis para clientes e testes legados
+DualChannelServer = HomelabServer
+
 
 
 def start_server(
