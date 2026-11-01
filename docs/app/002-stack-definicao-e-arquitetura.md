@@ -40,12 +40,16 @@ Por estarmos em ambiente Android nativo com Termux e sem permissão de superusu�
 
 | Serviço / Papel | Tecnologia Adotada | Porta Padrão | Descrição e Justificativa |
 | :--- | :--- | :--- | :--- |
-| **Terminal & Acesso Seguro** | **OpenSSH** | `8022` | Autenticação exclusiva por chave pública Ed25519; acesso direto via LAN. |
+| **Canal de Controle TCP** | **Python (Dual-Protocol)** | `9000` | Canal persistente com framing binário de 40B, HMAC-SHA256 dinâmico e autenticação. |
+| **Canal de Dados/Mídia TCP** | **Python (Chunked Transfer)** | `9001` | Canal de transferência rápida de mídia em chunks indexados de 64KB com validação HMAC. |
+| **Terminal Seguro (Debian)** | **OpenSSH (UserLAnd)** | `2022` | Acesso SSH ao ambiente Debian 11 Bullseye sem root, operando em porta alta. |
+| **Terminal Seguro (Termux)** | **OpenSSH (Termux)** | `8022` | Autenticação exclusiva por chave pública Ed25519 no ambiente Termux base. |
 | **Acesso Externo Seguro** | **Tailscale / Mesh VPN** | Dinâmica | Túnel criptografado P2P sem necessidade de abrir portas no roteador de borda. |
 | **Proxy Reverso HTTP/HTTPS** | **Caddy Server** | `8080` / `8443` | Proxy moderno e leve com recarregamento a quente e baixo uso de memória. |
 | **Gerenciador de Processos** | **PM2** / `termux-services` | — | Monitoramento, auto-restart em caso de falha e gestão de logs em segundo plano. |
 | **Banco de Dados Relacional** | **PostgreSQL** | `5432` | Banco relacional robusto e nativo compilado para ARM64 no Termux. |
-| **Banco de Dados Embutido** | **SQLite 3** | Arquivo local | Persistência serverless direta e sem overhead de rede para aplicações locais. |
+| **Banco de Dados Embutido** | **SQLite 3** | Arquivo local | Persistência serverless direta e sem overhead de rede para aplicações locais (`homelab.db`). |
+| **Ambiente de Aplicação** | **Debian 11 + Python venv** | — | Stack nativa isolada via virtualenv em espaço de usuário, sem o peso de VMs completas. |
 | **Containers sem Root** | **udocker** | Dinâmica | Execução de containers OCI via user namespaces e PRoot sem necessidade de Docker daemon. |
 | **Containers Completos** | **QEMU + Alpine VM** | `2222` (SSH VM) | VM de contingência para workloads que exigem Docker Engine e Docker Compose padrão. |
 
@@ -67,12 +71,20 @@ A linguagem padrão homologada para o desenvolvimento dos serviços e aplicaçõ
 ### 3.2. Estrutura Padrão de Diretórios da Aplicação
 
 ```text
-app/
-├── server.py              # Ponto de entrada do servidor de aplicação (TCP socket)
-├── client.py              # Cliente utilitário de teste e envio de mensagens
-├── logs/                  # Diretório de persistência de logs locais
-│   └── .gitkeep           # Preserva o diretório no repositório
-└── requirements.txt       # Dependências externas opcionais (quando houver)
+homelab/
+├── app/
+│   ├── server.py              # Daemon Dual-Channel TCP (Controle :9000 e Dados :9001)
+│   ├── client.py              # Cliente CLI interativo com Quick Login e envio de arquivos
+│   ├── config.py              # Central de configurações e parsing de arquivos .env (Fail-Fast)
+│   ├── protocol.py            # Framing binário de 40B, serialização de chunks e HMAC
+│   ├── database.py            # Persistência SQLite (homelab.db), auth PBKDF2 e chaves HMAC
+│   ├── client_session.py      # Gestor de sessão local NoSQL (JSON) para Quick Login
+│   ├── data/                  # Base de dados (homelab.db) e arquivos de mídia (uploads/)
+│   └── logs/                  # Diretório de persistência de logs locais
+├── envs/                      # Configurações de ambiente (server.env, client.env, .env.sample)
+├── scripts/                   # Automação de infraestrutura, bootstrap e check-infra.sh
+├── tests/                     # Suíte automatizada com testes de unidade e integração
+└── requirements.txt           # Dependências do projeto (ex: python-dotenv)
 ```
 
 ---

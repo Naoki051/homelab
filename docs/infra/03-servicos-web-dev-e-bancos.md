@@ -184,4 +184,4 @@ Dentro do Debian, você terá o gerenciador `apt`, caminhos padrão do Linux (`/
 
 ## 6. Próximo Passo
 
-Para rodar containers OCI e Docker Compose no Redmi Note 9S, prossiga para o [**Módulo 04: Containers e Docker Sem Root**](file:///Users/naokiteruya/Projects/homelab/docs/04-containers-docker-sem-root.md).
+Para rodar containers OCI e Docker Compose no Redmi Note 9S, prossiga para o [**Módulo 04: Containers e Docker Sem Root**](./04-containers-docker-sem-root.md).

@@ -132,4 +132,4 @@ Para acessar seu servidor de qualquer rede (4G/5G, trabalho, café) sem precisar
 
 ## 6. Próximo Passo
 
-Com o acesso SSH e a rede estabilizados, continue para o [**Módulo 03: Serviços Web, Dev e Bancos de Dados**](file:///Users/naokiteruya/Projects/homelab/docs/03-servicos-web-dev-e-bancos.md).
+Com o acesso SSH e a rede estabilizados, continue para o [**Módulo 03: Serviços Web, Dev e Bancos de Dados**](./03-servicos-web-dev-e-bancos.md).

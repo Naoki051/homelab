@@ -105,4 +105,4 @@ Operar um smartphone conectado à energia ininterruptamente exige precauções s
    - O Redmi Note 9S vem com carregador de 18W/22.5W (Fast Charging). Para operação 24/7, **evite carregadores turbo**, pois eles elevam a temperatura da bateria desnecessariamente. Um carregador simples padrão de 5V 1A ou 5V 2A supre o consumo do servidor (1.5W a 4W) sem esquentar o aparelho.
 4. **Ciclo Inteligente de Bateria (30% - 80%)**:
    - Manter a bateria estática em 100% sob tensão constante acelera a degradação química.
-   - No [Módulo 05](file:///Users/naokiteruya/Projects/homelab/docs/05-automacao-boot-e-manutencao.md), disponibilizamos o script `battery-guard.sh` que integra com tomadas inteligentes Wi-Fi (Tuya, Sonoff, Tapo, Home Assistant) ou envia alertas para ligar a tomada aos 30% e desligar aos 80%.
+   - No [Módulo 05](./05-automacao-boot-e-manutencao.md), disponibilizamos o script `battery-guard.sh` que integra com tomadas inteligentes Wi-Fi (Tuya, Sonoff, Tapo, Home Assistant) ou envia alertas para ligar a tomada aos 30% e desligar aos 80%.

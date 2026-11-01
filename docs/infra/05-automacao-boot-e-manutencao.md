@@ -9,7 +9,7 @@ Este módulo final detalha como tornar o Xiaomi Redmi Note 9S totalmente resilie
 Quando o celular é reiniciado (ou após uma eventual queda de energia onde a bateria se esgotou e o aparelho religou ao receber carga), o aplicativo **Termux:Boot** executa todos os scripts presentes no diretório `~/.termux/boot/`.
 
 ### Configuração Passo a Passo:
-1. Certifique-se de que o aplicativo **Termux:Boot** está instalado e com a opção *"Início Automático"* ativada na MIUI (conforme o [Módulo 01](file:///Users/naokiteruya/Projects/homelab/docs/01-preparacao-miui-android.md)).
+1. Certifique-se de que o aplicativo **Termux:Boot** está instalado e com a opção *"Início Automático"* ativada na MIUI (conforme o [Módulo 01](./01-preparacao-miui-android.md)).
 2. Abra o aplicativo Termux:Boot pelo menos uma vez no celular para registrar as permissões no Android.
 3. Crie o diretório de scripts de boot no Termux:
    ```bash
