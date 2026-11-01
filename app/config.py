@@ -70,7 +70,7 @@ def _load_env_if_present(env_path: Optional[Path], override: bool = False) -> No
                         val = val.strip().strip("'\"")
                         if override or key not in os.environ:
                             os.environ[key] = val
-            except Exception:
+            except (OSError, UnicodeDecodeError):
                 pass
 
 
