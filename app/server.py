@@ -15,6 +15,7 @@ import json
 import math
 from pathlib import Path
 import socket
+import sqlite3
 import sys
 import threading
 from types import TracebackType
@@ -431,16 +432,29 @@ def handle_control_client_connection(
                 if msg is None:
                     break
 
-                resp, active_username, next_hmac_key = process_control_message(
-                    msg=msg,
-                    client_address=client_address,
-                    repo=repo,
-                    log_path=log_path,
-                    authenticated_user=active_username,
-                    session_key=current_hmac_key,
-                    ticket_manager=ticket_manager,
-                    data_port=data_port,
-                )
+                try:
+                    resp, active_username, next_hmac_key = process_control_message(
+                        msg=msg,
+                        client_address=client_address,
+                        repo=repo,
+                        log_path=log_path,
+                        authenticated_user=active_username,
+                        session_key=current_hmac_key,
+                        ticket_manager=ticket_manager,
+                        data_port=data_port,
+                    )
+                except (StorageError, sqlite3.DatabaseError) as db_err:
+                    logger.error(
+                        "Erro de banco de dados no Canal de Controle (%s:%s): %s",
+                        client_ip,
+                        client_port,
+                        db_err,
+                    )
+                    resp = Message.response(
+                        Message.STATUS_ERROR,
+                        f"Erro interno de armazenamento: {db_err}",
+                    )
+                    next_hmac_key = current_hmac_key
 
                 # A resposta é assinada com a chave vigente no momento da requisição
                 resp.send_framed(client_socket, hmac_key=current_hmac_key)
@@ -463,6 +477,7 @@ def handle_control_client_connection(
         HMACVerificationError,
         AuthenticationError,
         StorageError,
+        sqlite3.DatabaseError,
         ConnectionResetError,
         BrokenPipeError,
         TimeoutError,
@@ -470,9 +485,21 @@ def handle_control_client_connection(
         ValueError,
     ) as e:
         logger.error("Erro no Canal de Controle (%s:%s) -> %s", client_ip, client_port, e)
+        if isinstance(e, (StorageError, sqlite3.DatabaseError)):
+            try:
+                err_resp = Message.response(
+                    Message.STATUS_ERROR,
+                    f"Erro de armazenamento: {e}",
+                )
+                err_resp.send_framed(client_socket, hmac_key=current_hmac_key)
+            except OSError:
+                pass
     finally:
         if active_username:
-            repo.update_status(active_username, "offline")
+            try:
+                repo.update_status(active_username, "offline")
+            except (StorageError, sqlite3.DatabaseError):
+                pass
         try:
             client_socket.close()
         except OSError:

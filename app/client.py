@@ -294,7 +294,12 @@ class ControlConnection:
                 for chunk in MediaChunk.slice_file(path, ticket=ticket_hex, chunk_size=CHUNK_SIZE):
                     chunk.send(data_sock, hmac_key=self.session_key)
 
-                final_resp = Message.recv_framed(data_sock, hmac_key=self.session_key)
+                try:
+                    final_resp = Message.recv_framed(data_sock, hmac_key=self.session_key)
+                except (ValueError, json.JSONDecodeError) as e:
+                    logger.error("Falha no protocolo de resposta no Canal de Dados: %s", e)
+                    return False, f"Falha no protocolo de resposta: {e}"
+
                 if not final_resp:
                     return False, "Canal de dados fechou sem enviar confirmação final."
 
@@ -314,9 +319,11 @@ class ControlConnection:
                 OSError,
                 ProtocolError,
                 HMACVerificationError,
+                ValueError,
+                json.JSONDecodeError,
             ) as e:
-                logger.error("Erro de rede no Canal de Dados ao enviar '%s': %s", path.name, e)
-                return False, f"Erro de rede no Canal de Dados: {e}"
+                logger.error("Erro no Canal de Dados ao enviar '%s': %s", path.name, e)
+                return False, f"Falha no protocolo de resposta: {e}"
 
     def close(self) -> None:
         if self.sock is not None:
@@ -550,11 +557,15 @@ class HomelabClient:
 
         path = Path(file_path)
         target_port = data_port or self.config.data_port
-        return self.control_conn.upload_file(
-            path,
-            data_port=target_port,
-            secret_hash=self.secret_hash or "",
-        )
+        try:
+            return self.control_conn.upload_file(
+                path,
+                data_port=target_port,
+                secret_hash=self.secret_hash or "",
+            )
+        except (ValueError, json.JSONDecodeError) as e:
+            logger.error("Falha no protocolo de resposta no upload de '%s': %s", path.name, e)
+            return False, f"Falha no protocolo de resposta: {e}"
 
     def close(self) -> None:
         """Fecha determinísticamente a conexão TCP de controle."""

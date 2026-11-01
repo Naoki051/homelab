@@ -161,9 +161,12 @@ class ClientRepository:
         VALUES (?, ?, 'offline', NULL, ?, ?);
         """
         with self.connection() as conn:
-            cursor = conn.execute(insert_query, (username, pwd_hash, now, now))
-            conn.commit()
-            client_id = cursor.lastrowid
+            try:
+                cursor = conn.execute(insert_query, (username, pwd_hash, now, now))
+                conn.commit()
+                client_id = cursor.lastrowid
+            except sqlite3.IntegrityError:
+                return False, f"Usuário '{username}' já existe no sistema.", None
 
         client = Client(
             id=client_id,
