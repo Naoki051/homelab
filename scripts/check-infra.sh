@@ -8,13 +8,22 @@
 
 set -eo pipefail
 
-# Cores ANSI
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# Cores ANSI (habilitadas somente se terminal interativo e NO_COLOR não estiver definida)
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    BLUE='\033[0;34m'
+    YELLOW='\033[1;33m'
+    CYAN='\033[0;36m'
+    NC='\033[0m'
+else
+    RED=''
+    GREEN=''
+    BLUE=''
+    YELLOW=''
+    CYAN=''
+    NC=''
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
