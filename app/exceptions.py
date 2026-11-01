@@ -5,7 +5,7 @@ eliminando a necessidade de capturas e lançamentos genéricos de `Exception`,
 além de fornecer utilitários para mascaramento de credenciais e dados sensíveis.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 
 class HomelabError(Exception):
@@ -13,8 +13,8 @@ class HomelabError(Exception):
 
     def __init__(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(message)
-        self.message = message
-        self.context = context or {}
+        self.message: str = message
+        self.context: Dict[str, Any] = context or {}
 
     def __str__(self) -> str:
         if self.context:
@@ -23,7 +23,7 @@ class HomelabError(Exception):
         return self.message
 
 
-class ProtocolError(HomelabError):
+class ProtocolError(HomelabError, ValueError):
     """Violação de protocolo, framing binário corrompido ou magic byte inválido."""
 
     pass
@@ -60,29 +60,44 @@ class NetworkTimeoutError(HomelabError):
 
 
 def mask_secret(
-    secret: Optional[str],
+    secret: Optional[Union[str, bytes]] = None,
     show_prefix: int = 4,
     show_suffix: int = 4,
 ) -> str:
     """Mascara chaves, tokens e hashes longos preservando apenas prefixo e sufixo.
 
-    Exemplos:
-        mask_secret("1a2b3c4d5e6f7g8h9i0j") -> "1a2b...9i0j"
-        mask_secret("curto") -> "***"
-        mask_secret(None) -> "[VAZIO]"
+    Substitui o segmento intermediário de identificadores e chaves sensíveis por
+    reticências, garantindo proteção estrita contra vazamento em logs ou saídas
+    de terminal, ou por '***' caso o comprimento seja insuficiente.
+
+    Args:
+        secret: Chave, token ou hash confidencial (aceita str, bytes ou None).
+        show_prefix: Quantidade de caracteres visíveis no início (padrão: 4).
+        show_suffix: Quantidade de caracteres visíveis no final (padrão: 4).
+
+    Returns:
+        str: Valor sanitizado seguro contra vazamento em logs.
     """
     if secret is None or len(secret) == 0:
         return "[VAZIO]"
 
-    total_len = len(secret)
+    raw_secret: str = secret.hex() if isinstance(secret, (bytes, bytearray)) else str(secret)
+    total_len = len(raw_secret)
     if total_len <= (show_prefix + show_suffix + 2):
         return "***"
 
-    return f"{secret[:show_prefix]}...{secret[-show_suffix:]}"
+    return f"{raw_secret[:show_prefix]}...{raw_secret[-show_suffix:]}"
 
 
 def mask_password(password: Optional[str]) -> str:
-    """Mascara terminantemente qualquer senha para impedir vazamento em logs."""
+    """Mascara terminantemente qualquer senha para impedir vazamento em logs.
+
+    Args:
+        password: Senha em texto puro a ser mascarada (ou None).
+
+    Returns:
+        str: '[VAZIO]' se None ou vazia, ou '***' se preenchida.
+    """
     if not password:
         return "[VAZIO]"
     return "***"
