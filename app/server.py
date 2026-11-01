@@ -10,6 +10,7 @@ import argparse
 from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
+import json
 import math
 from pathlib import Path
 import socket
@@ -25,6 +26,13 @@ if str(REPO_ROOT) not in sys.path:
 try:
     from app.config import ServerConfig, load_server_config
     from app.database import ClientRepository
+    from app.exceptions import (
+        AuthenticationError,
+        HMACVerificationError,
+        HomelabError,
+        ProtocolError,
+        StorageError,
+    )
     from app.protocol import (
         CHUNK_SIZE,
         CONTROL_MAGIC,
@@ -37,6 +45,13 @@ try:
 except ImportError:
     from config import ServerConfig, load_server_config
     from database import ClientRepository
+    from exceptions import (
+        AuthenticationError,
+        HMACVerificationError,
+        HomelabError,
+        ProtocolError,
+        StorageError,
+    )
     from protocol import (
         CHUNK_SIZE,
         CONTROL_MAGIC,
@@ -313,7 +328,7 @@ def handle_client_payload(
 
     try:
         msg = Message.from_bytes(raw_data)
-    except Exception:
+    except (ProtocolError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
         raw_text = raw_data.decode("utf-8", errors="replace").strip()
         print(f"[>] Mensagem em texto puro recebida de {client_ip}:{client_port}: {raw_text}")
         log_message(log_path, client_address, raw_text)
@@ -407,14 +422,24 @@ def handle_control_client_connection(
             )
             client_socket.sendall(response_bytes)
 
-    except Exception as e:
+    except (
+        ProtocolError,
+        HMACVerificationError,
+        AuthenticationError,
+        StorageError,
+        ConnectionResetError,
+        BrokenPipeError,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ) as e:
         print(f"[!] Erro no Canal de Controle ({client_ip}:{client_port}) -> {e}")
     finally:
         if active_username:
             repo.update_status(active_username, "offline")
         try:
             client_socket.close()
-        except Exception:
+        except OSError:
             pass
         print(f"[-] Conexão de controle encerrada com {client_ip}:{client_port}")
 
@@ -498,18 +523,27 @@ def handle_data_client_connection(
                 ticket_manager.remove_ticket(ticket.ticket_hex)
                 break
 
-    except Exception as e:
+    except (
+        ProtocolError,
+        HMACVerificationError,
+        StorageError,
+        ConnectionResetError,
+        BrokenPipeError,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ) as e:
         print(f"[!] Erro no Canal de Dados ({client_ip}:{client_port}) -> {e}")
         if current_ticket:
             try:
                 err_resp = Message.response(Message.STATUS_ERROR, f"Falha no upload: {e}")
                 err_resp.send_framed(client_socket, hmac_key=current_ticket.session_key)
-            except Exception:
+            except (OSError, ProtocolError, ValueError):
                 pass
     finally:
         try:
             client_socket.close()
-        except Exception:
+        except OSError:
             pass
 
 
@@ -627,7 +661,7 @@ class ControlServer(BaseNetworkService):
         if self.socket is not None:
             try:
                 self.socket.close()
-            except Exception:
+            except OSError:
                 pass
             self.socket = None
 
@@ -715,7 +749,7 @@ class DataServer(BaseNetworkService):
         if self.socket is not None:
             try:
                 self.socket.close()
-            except Exception:
+            except OSError:
                 pass
             self.socket = None
 
