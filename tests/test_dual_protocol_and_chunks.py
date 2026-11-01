@@ -25,7 +25,13 @@ from app.protocol import (
     generate_session_key,
     generate_upload_ticket,
 )
-from app.server import DualChannelServer
+from app.server import (
+    BaseNetworkService,
+    ControlServer,
+    DataServer,
+    DualChannelServer,
+    HomelabServer,
+)
 
 
 class TestControlFramingAndHMAC(unittest.TestCase):
@@ -176,6 +182,137 @@ class TestDualChannelEndToEnd(unittest.TestCase):
         client_record = self.server.repo.get_by_username("naoki_dual")
         self.assertIsNotNone(client_record)
         self.assertEqual(client_record.status, "offline")
+
+
+class TestServerOOArchitecture(unittest.TestCase):
+    """Valida a arquitetura orientada a objetos do servidor (DEBT-01 e DEBT-03)."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = Path(self.temp_dir) / "test_oo.db"
+        self.log_path = Path(self.temp_dir) / "test_oo.log"
+        self.uploads_dir = Path(self.temp_dir) / "uploads"
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_base_network_service_is_abstract(self) -> None:
+        """Garante que BaseNetworkService não pode ser instanciada sem implementar start e stop."""
+        with self.assertRaises(TypeError):
+            BaseNetworkService("127.0.0.1", 9000)  # type: ignore
+
+        class DummyService(BaseNetworkService):
+            def start(self) -> None:
+                self.is_running = True
+
+            def stop(self) -> None:
+                self.is_running = False
+
+        dummy = DummyService("127.0.0.1", 9000)
+        self.assertEqual(dummy.host, "127.0.0.1")
+        self.assertEqual(dummy.port, 9000)
+        self.assertFalse(dummy.is_running)
+        dummy.start()
+        self.assertTrue(dummy.is_running)
+        dummy.stop()
+        self.assertFalse(dummy.is_running)
+
+    def test_control_server_lifecycle(self) -> None:
+        """Valida o ciclo de vida (startup, binding e shutdown) do ControlServer."""
+        srv = ControlServer(
+            host="127.0.0.1",
+            port=0,
+            db_path=self.db_path,
+            log_path=self.log_path,
+            uploads_dir=self.uploads_dir,
+        )
+        self.assertFalse(srv.is_running)
+        self.assertIsNone(srv.socket)
+
+        srv.start()
+        try:
+            self.assertTrue(srv.is_running)
+            self.assertIsNotNone(srv.socket)
+            self.assertGreater(srv.port, 0)
+        finally:
+            srv.stop()
+
+        self.assertFalse(srv.is_running)
+        self.assertIsNone(srv.socket)
+
+    def test_data_server_lifecycle(self) -> None:
+        """Valida o ciclo de vida (startup, binding e shutdown) do DataServer."""
+        srv = DataServer(
+            host="127.0.0.1",
+            port=0,
+            uploads_dir=self.uploads_dir,
+            log_path=self.log_path,
+        )
+        self.assertFalse(srv.is_running)
+        self.assertIsNone(srv.socket)
+
+        srv.start()
+        try:
+            self.assertTrue(srv.is_running)
+            self.assertIsNotNone(srv.socket)
+            self.assertGreater(srv.port, 0)
+        finally:
+            srv.stop()
+
+        self.assertFalse(srv.is_running)
+        self.assertIsNone(srv.socket)
+
+    def test_homelab_server_context_manager_lifecycle(self) -> None:
+        """Valida que HomelabServer gerencia determinísticamente os serviços via context manager."""
+        with HomelabServer(
+            host="127.0.0.1",
+            control_port=0,
+            data_port=0,
+            db_path=self.db_path,
+            log_path=self.log_path,
+            uploads_dir=self.uploads_dir,
+        ) as server:
+            self.assertTrue(server.is_running)
+            self.assertTrue(server.control_server.is_running)
+            self.assertTrue(server.data_server.is_running)
+            self.assertGreater(server.control_port, 0)
+            self.assertGreater(server.data_port, 0)
+            self.assertEqual(server.control_server.data_port, server.data_port)
+            self.assertIsNotNone(server.control_socket)
+            self.assertIsNotNone(server.data_socket)
+
+        self.assertFalse(server.is_running)
+        self.assertFalse(server.control_server.is_running)
+        self.assertFalse(server.data_server.is_running)
+        self.assertIsNone(server.control_socket)
+        self.assertIsNone(server.data_socket)
+
+    def test_homelab_server_facades_and_properties(self) -> None:
+        """Valida fachadas retrocompatíveis e propriedades de conveniência."""
+        self.assertIs(DualChannelServer, HomelabServer)
+
+        server = DualChannelServer(
+            host="127.0.0.1",
+            control_port=0,
+            data_port=0,
+            db_path=self.db_path,
+            log_path=self.log_path,
+            uploads_dir=self.uploads_dir,
+        )
+        self.assertEqual(server.host, "127.0.0.1")
+        self.assertFalse(server.running)
+
+        server.start_in_background()
+        try:
+            self.assertTrue(server.running)
+            self.assertGreater(server.control_port, 0)
+            self.assertGreater(server.data_port, 0)
+            self.assertIsNotNone(server.repo)
+            self.assertIsNotNone(server.ticket_manager)
+        finally:
+            server.stop()
+
+        self.assertFalse(server.running)
 
 
 if __name__ == "__main__":

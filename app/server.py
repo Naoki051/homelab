@@ -5,16 +5,20 @@ Servidor TCP Dual-Channel para Homelab com Autenticação, Framing Binário, Chu
 - Canal de Dados/Mídia (Porta 9001): Recepção de arquivos pesados em Chunks indexados de 64KB (62B header) com streaming direto para disco.
 """
 
+from abc import ABC, abstractmethod
 import argparse
+import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
+import json
 import math
 from pathlib import Path
 import socket
 import sys
 import threading
-from typing import Dict, Optional, Set, Tuple
+from types import TracebackType
+from typing import Dict, List, Optional, Set, Tuple, Type
 
 # Garante que a raiz do projeto esteja no sys.path para suportar execução a partir de qualquer diretório
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -24,6 +28,16 @@ if str(REPO_ROOT) not in sys.path:
 try:
     from app.config import ServerConfig, load_server_config
     from app.database import ClientRepository
+    from app.exceptions import (
+        AuthenticationError,
+        HMACVerificationError,
+        HomelabError,
+        ProtocolError,
+        StorageError,
+        mask_password,
+        mask_secret,
+    )
+    from app.logging import get_logger
     from app.protocol import (
         CHUNK_SIZE,
         CONTROL_MAGIC,
@@ -36,6 +50,16 @@ try:
 except ImportError:
     from config import ServerConfig, load_server_config
     from database import ClientRepository
+    from exceptions import (
+        AuthenticationError,
+        HMACVerificationError,
+        HomelabError,
+        ProtocolError,
+        StorageError,
+        mask_password,
+        mask_secret,
+    )
+    from logging_compat import get_logger  # type: ignore
     from protocol import (
         CHUNK_SIZE,
         CONTROL_MAGIC,
@@ -45,6 +69,8 @@ except ImportError:
         generate_session_key,
         generate_upload_ticket,
     )
+
+logger = get_logger(__name__)
 
 _initial_server_config = load_server_config()
 DEFAULT_HOST = _initial_server_config.host
@@ -75,7 +101,7 @@ class UploadTicket:
 class UploadTicketManager:
     """Gerenciador thread-safe de tickets de upload emitidos pelo Canal de Controle."""
 
-    def __init__(self, uploads_dir: Path = DEFAULT_UPLOADS_DIR):
+    def __init__(self, uploads_dir: Path = DEFAULT_UPLOADS_DIR) -> None:
         self.uploads_dir = uploads_dir
         self._tickets: Dict[str, UploadTicket] = {}
         self._lock = threading.Lock()
@@ -172,12 +198,21 @@ def process_control_message(
     password = payload.get("password", "")
 
     if action == Message.ACTION_REGISTER:
-        print(f"[*] Requisição de registro para o usuário '{username}' de {client_ip}:{client_port}")
+        logger.info(
+            "Requisição de registro para o usuário '%s' de %s:%s",
+            username,
+            client_ip,
+            client_port,
+        )
         ok, reason, _ = repo.register(username, password)
         if ok:
             repo.update_status(username, "online")
             new_session_key = generate_session_key()
-            print(f"[+] Usuário '{username}' registrado com sucesso! Chave de sessão HMAC emitida.")
+            logger.info(
+                "Usuário '%s' registrado com sucesso! Chave de sessão HMAC emitida (%s).",
+                username,
+                mask_secret(new_session_key),
+            )
             resp = Message.response(
                 Message.STATUS_OK,
                 reason,
@@ -189,17 +224,25 @@ def process_control_message(
             )
             return resp, username, new_session_key
         else:
-            print(f"[!] Falha no registro do usuário '{username}': {reason}")
+            logger.warning("Falha no registro do usuário '%s': %s", username, reason)
             resp = Message.response(Message.STATUS_ERROR, reason)
             return resp, authenticated_user, session_key
 
     elif action == Message.ACTION_LOGIN:
-        print(f"[*] Tentativa de login do usuário '{username}' de {client_ip}:{client_port}")
+        logger.info(
+            "Tentativa de login do usuário '%s' de %s:%s",
+            username,
+            client_ip,
+            client_port,
+        )
         ok, reason, _ = repo.authenticate(username, password)
         if ok:
             repo.update_status(username, "online")
             new_session_key = generate_session_key()
-            print(f"[+] Usuário '{username}' autenticado com sucesso! Status: online")
+            logger.info(
+                "Usuário '%s' autenticado com sucesso! Status: online",
+                username,
+            )
             resp = Message.response(
                 Message.STATUS_OK,
                 reason,
@@ -211,13 +254,18 @@ def process_control_message(
             )
             return resp, username, new_session_key
         else:
-            print(f"[!] Login rejeitado para '{username}': {reason}")
+            logger.warning("Login rejeitado para '%s': %s", username, reason)
             resp = Message.response(Message.STATUS_ERROR, reason)
             return resp, authenticated_user, session_key
 
     elif action == Message.ACTION_SEND:
         text = payload.get("text", "").strip()
-        print(f"[*] Envio de mensagem autenticada por '{username}' de {client_ip}:{client_port}")
+        logger.info(
+            "Envio de mensagem autenticada por '%s' de %s:%s",
+            username,
+            client_ip,
+            client_port,
+        )
 
         # Se a conexão já está autenticada via sessão persistente + HMAC válido, evita re-hash PBKDF2
         if authenticated_user and username == authenticated_user:
@@ -226,13 +274,13 @@ def process_control_message(
             auth_ok, reason, _ = repo.authenticate(username, password)
 
         if not auth_ok:
-            print(f"[!] Mensagem de '{username}' rejeitada: {reason}")
+            logger.warning("Mensagem de '%s' rejeitada: %s", username, reason)
             resp = Message.response(Message.STATUS_ERROR, f"Autenticação requerida: {reason}")
             return resp, authenticated_user, session_key
 
         repo.update_status(username, "online")
         log_message(log_path, client_address, text, username=username)
-        print(f"[✓] Mensagem de '{username}' salva no log: {text}")
+        logger.info("Mensagem de '%s' salva no log: %s", username, text)
 
         resp = Message.response(
             Message.STATUS_OK,
@@ -270,9 +318,13 @@ def process_control_message(
             session_key=session_key,
             expected_sha256=expected_sha256,
         )
-        print(
-            f"[*] Ticket de upload '{ticket.ticket_hex[:8]}...' emitido para '{username}' "
-            f"({ticket.filename}, {file_size} bytes, {ticket.total_chunks} chunks)"
+        logger.info(
+            "Ticket de upload '%s' emitido para '%s' (%s, %d bytes, %d chunks)",
+            mask_secret(ticket.ticket_hex),
+            username,
+            ticket.filename,
+            file_size,
+            ticket.total_chunks,
         )
         resp = Message.response(
             Message.STATUS_OK,
@@ -312,9 +364,9 @@ def handle_client_payload(
 
     try:
         msg = Message.from_bytes(raw_data)
-    except Exception:
+    except (ProtocolError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
         raw_text = raw_data.decode("utf-8", errors="replace").strip()
-        print(f"[>] Mensagem em texto puro recebida de {client_ip}:{client_port}: {raw_text}")
+        logger.info("Mensagem em texto puro recebida de %s:%s: %s", client_ip, client_port, raw_text)
         log_message(log_path, client_address, raw_text)
         ack = f"ACK: Mensagem recebida pelo servidor ({datetime.now().strftime('%H:%M:%S')})\n"
         return ack.encode("utf-8"), None
@@ -406,16 +458,26 @@ def handle_control_client_connection(
             )
             client_socket.sendall(response_bytes)
 
-    except Exception as e:
-        print(f"[!] Erro no Canal de Controle ({client_ip}:{client_port}) -> {e}")
+    except (
+        ProtocolError,
+        HMACVerificationError,
+        AuthenticationError,
+        StorageError,
+        ConnectionResetError,
+        BrokenPipeError,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ) as e:
+        logger.error("Erro no Canal de Controle (%s:%s) -> %s", client_ip, client_port, e)
     finally:
         if active_username:
             repo.update_status(active_username, "offline")
         try:
             client_socket.close()
-        except Exception:
+        except OSError:
             pass
-        print(f"[-] Conexão de controle encerrada com {client_ip}:{client_port}")
+        logger.info("Conexão de controle encerrada com %s:%s", client_ip, client_port)
 
 
 def handle_data_client_connection(
@@ -478,9 +540,12 @@ def handle_data_client_connection(
                     f"{ticket.total_chunks} chunks, sha256={actual_sha256[:12]}...)",
                     username=ticket.username,
                 )
-                print(
-                    f"[✓] Upload concluído para '{ticket.username}': {ticket.dest_path.name} "
-                    f"({ticket.total_chunks} chunks)"
+                logger.info(
+                    "Upload concluído para '%s': %s (%d chunks, sha256=%s)",
+                    ticket.username,
+                    ticket.dest_path.name,
+                    ticket.total_chunks,
+                    mask_secret(actual_sha256),
                 )
                 ok_resp = Message.response(
                     Message.STATUS_OK,
@@ -497,23 +562,279 @@ def handle_data_client_connection(
                 ticket_manager.remove_ticket(ticket.ticket_hex)
                 break
 
-    except Exception as e:
-        print(f"[!] Erro no Canal de Dados ({client_ip}:{client_port}) -> {e}")
+    except (
+        ProtocolError,
+        HMACVerificationError,
+        StorageError,
+        ConnectionResetError,
+        BrokenPipeError,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ) as e:
+        logger.error("Erro no Canal de Dados (%s:%s) -> %s", client_ip, client_port, e)
         if current_ticket:
             try:
                 err_resp = Message.response(Message.STATUS_ERROR, f"Falha no upload: {e}")
                 err_resp.send_framed(client_socket, hmac_key=current_ticket.session_key)
-            except Exception:
+            except (OSError, ProtocolError, ValueError):
                 pass
     finally:
         try:
             client_socket.close()
-        except Exception:
+        except OSError:
             pass
 
 
-class DualChannelServer:
-    """Gerencia o ciclo de vida dos sockets de Controle (Porta 9000) e de Dados (Porta 9001)."""
+class BaseNetworkService(ABC):
+    """Classe base abstrata para serviços de rede TCP no Homelab."""
+
+    def __init__(self, host: str, port: int) -> None:
+        self.host: str = host
+        self.port: int = port
+        self.socket: Optional[socket.socket] = None
+        self.is_running: bool = False
+        self._thread: Optional[threading.Thread] = None
+
+    @abstractmethod
+    def start(self) -> None:
+        """Inicia o serviço de rede e seu loop de escuta."""
+        pass
+
+    @abstractmethod
+    def stop(self) -> None:
+        """Encerra o serviço de rede e libera recursos alocados."""
+        pass
+
+
+class ControlServer(BaseNetworkService):
+    """Servidor TCP para o Canal de Controle (Porta 9000).
+
+    Encapsula o listener TCP, enquadramento binário de 40B, autenticação PBKDF2,
+    sessões HMAC dinâmicas e processamento de mensagens.
+    """
+
+    def __init__(
+        self,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        repo: Optional[ClientRepository] = None,
+        log_path: Path = DEFAULT_LOG_PATH,
+        ticket_manager: Optional[UploadTicketManager] = None,
+        data_port: int = DEFAULT_DATA_PORT,
+        db_path: Path = DEFAULT_DB_PATH,
+        uploads_dir: Path = DEFAULT_UPLOADS_DIR,
+    ) -> None:
+        super().__init__(host=host, port=port)
+        self.db_path = db_path
+        self.uploads_dir = uploads_dir
+        self.repo = repo if repo is not None else ClientRepository(db_path=self.db_path)
+        self.ticket_manager = (
+            ticket_manager
+            if ticket_manager is not None
+            else UploadTicketManager(uploads_dir=self.uploads_dir)
+        )
+        self.log_path = log_path
+        self.data_port = data_port
+
+    def bind_and_listen(self, backlog: int = 16) -> None:
+        """Vincula o socket de controle e coloca em modo de escuta."""
+        if self.socket is not None:
+            return
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.bind((self.host, self.port))
+        self.socket.listen(backlog)
+        self.port = self.socket.getsockname()[1]
+        self.socket.settimeout(1.0)
+        self.is_running = True
+
+    def start(self) -> None:
+        """Inicia o listener de controle em thread de segundo plano."""
+        if self.is_running and self._thread is not None and self._thread.is_alive():
+            return
+        if self.socket is None:
+            self.bind_and_listen()
+        self.is_running = True
+        self._thread = threading.Thread(target=self._accept_loop, daemon=True)
+        self._thread.start()
+
+    def _accept_loop(self) -> None:
+        """Loop de aceitação de conexões de clientes de controle."""
+        if self.socket is not None:
+            self.socket.settimeout(1.0)
+        while self.is_running:
+            try:
+                if self.socket is None:
+                    break
+                client_sock, client_addr = self.socket.accept()
+            except (socket.timeout, TimeoutError):
+                continue
+            except OSError:
+                break
+
+            if not self.is_running:
+                client_sock.close()
+                break
+            client_ip, client_port = client_addr
+            logger.info("Conexão de controle aceita de %s:%s", client_ip, client_port)
+            t = threading.Thread(
+                target=self._handle_client_thread,
+                args=(client_sock, client_addr),
+                daemon=True,
+            )
+            t.start()
+
+    def _handle_client_thread(
+        self,
+        client_sock: socket.socket,
+        client_addr: Tuple[str, int],
+    ) -> None:
+        """Gerencia deterministicamente a conexão do cliente com context manager."""
+        with contextlib.closing(client_sock):
+            self.handle_connection(client_sock, client_addr)
+
+    def handle_connection(
+        self,
+        client_sock: socket.socket,
+        client_addr: Tuple[str, int],
+    ) -> None:
+        """Processa a conexão de um cliente de controle."""
+        handle_control_client_connection(
+            client_socket=client_sock,
+            client_address=client_addr,
+            repo=self.repo,
+            log_path=self.log_path,
+            ticket_manager=self.ticket_manager,
+            data_port=self.data_port,
+        )
+
+    def stop(self) -> None:
+        """Encerra o socket de controle e para o loop de aceitação."""
+        self.is_running = False
+        if self.socket is not None:
+            try:
+                self.socket.close()
+            except OSError:
+                pass
+            self.socket = None
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+
+class DataServer(BaseNetworkService):
+    """Servidor TCP para o Canal de Dados/Mídia (Porta 9001).
+
+    Encapsula o listener TCP, recepção de chunks indexados de 64KB (cabeçalho 62B),
+    validação de integridade SHA-256 e streaming direto para disco.
+    """
+
+    def __init__(
+        self,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_DATA_PORT,
+        ticket_manager: Optional[UploadTicketManager] = None,
+        log_path: Path = DEFAULT_LOG_PATH,
+        uploads_dir: Path = DEFAULT_UPLOADS_DIR,
+    ) -> None:
+        super().__init__(host=host, port=port)
+        self.uploads_dir = uploads_dir
+        self.ticket_manager = (
+            ticket_manager
+            if ticket_manager is not None
+            else UploadTicketManager(uploads_dir=self.uploads_dir)
+        )
+        self.log_path = log_path
+
+    def bind_and_listen(self, backlog: int = 16) -> None:
+        """Vincula o socket de dados e coloca em modo de escuta."""
+        if self.socket is not None:
+            return
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.bind((self.host, self.port))
+        self.socket.listen(backlog)
+        self.port = self.socket.getsockname()[1]
+        self.socket.settimeout(1.0)
+        self.is_running = True
+
+    def start(self) -> None:
+        """Inicia o listener de dados em thread de segundo plano."""
+        if self.is_running and self._thread is not None and self._thread.is_alive():
+            return
+        if self.socket is None:
+            self.bind_and_listen()
+        self.is_running = True
+        self._thread = threading.Thread(target=self._accept_loop, daemon=True)
+        self._thread.start()
+
+    def _accept_loop(self) -> None:
+        """Loop de aceitação de conexões de upload de dados."""
+        if self.socket is not None:
+            self.socket.settimeout(1.0)
+        while self.is_running:
+            try:
+                if self.socket is None:
+                    break
+                client_sock, client_addr = self.socket.accept()
+            except (socket.timeout, TimeoutError):
+                continue
+            except OSError:
+                break
+
+            if not self.is_running:
+                client_sock.close()
+                break
+            t = threading.Thread(
+                target=self._handle_client_thread,
+                args=(client_sock, client_addr),
+                daemon=True,
+            )
+            t.start()
+
+    def _handle_client_thread(
+        self,
+        client_sock: socket.socket,
+        client_addr: Tuple[str, int],
+    ) -> None:
+        """Gerencia deterministicamente a conexão do cliente de dados com context manager."""
+        with contextlib.closing(client_sock):
+            self.handle_chunk_stream(client_sock, client_addr)
+
+    def handle_chunk_stream(
+        self,
+        client_sock: socket.socket,
+        client_addr: Tuple[str, int],
+    ) -> None:
+        """Processa a transferência de chunks de mídia."""
+        handle_data_client_connection(
+            client_socket=client_sock,
+            client_address=client_addr,
+            ticket_manager=self.ticket_manager,
+            log_path=self.log_path,
+        )
+
+    def stop(self) -> None:
+        """Encerra o socket de dados e para o loop de aceitação."""
+        self.is_running = False
+        if self.socket is not None:
+            try:
+                self.socket.close()
+            except OSError:
+                pass
+            self.socket = None
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+
+class HomelabServer:
+    """Orquestrador da Arquitetura Dual-Channel do Homelab.
+
+    Compõe e gerencia o ciclo de vida conjunto do Canal de Controle (ControlServer)
+    e do Canal de Dados (DataServer), provendo suporte a Context Manager.
+    """
 
     def __init__(
         self,
@@ -523,113 +844,147 @@ class DualChannelServer:
         log_path: Path = DEFAULT_LOG_PATH,
         db_path: Path = DEFAULT_DB_PATH,
         uploads_dir: Path = DEFAULT_UPLOADS_DIR,
-    ):
-        self.host = host
-        self.control_port = control_port
-        self.data_port = data_port
-        self.log_path = log_path
+        config: Optional[ServerConfig] = None,
+    ) -> None:
+        if config is not None:
+            host = config.host
+            control_port = config.control_port
+            data_port = config.data_port
+            log_path = config.log_path
+            db_path = config.db_path
+            uploads_dir = config.uploads_dir
+
         self.db_path = db_path
         self.uploads_dir = uploads_dir
-
+        self.log_path = log_path
         self.repo = ClientRepository(db_path=self.db_path)
         self.ticket_manager = UploadTicketManager(uploads_dir=self.uploads_dir)
 
-        self.control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.control_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.control_server = ControlServer(
+            host=host,
+            port=control_port,
+            repo=self.repo,
+            log_path=self.log_path,
+            ticket_manager=self.ticket_manager,
+            data_port=data_port,
+            db_path=self.db_path,
+            uploads_dir=self.uploads_dir,
+        )
+        self.data_server = DataServer(
+            host=host,
+            port=data_port,
+            ticket_manager=self.ticket_manager,
+            log_path=self.log_path,
+            uploads_dir=self.uploads_dir,
+        )
+        self.is_running = False
 
-        self.data_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.data_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    @property
+    def host(self) -> str:
+        return self.control_server.host
 
-        self.running = False
+    @property
+    def control_port(self) -> int:
+        return self.control_server.port
+
+    @control_port.setter
+    def control_port(self, val: int) -> None:
+        self.control_server.port = val
+
+    @property
+    def data_port(self) -> int:
+        return self.data_server.port
+
+    @data_port.setter
+    def data_port(self, val: int) -> None:
+        self.data_server.port = val
+
+    @property
+    def control_socket(self) -> Optional[socket.socket]:
+        return self.control_server.socket
+
+    @property
+    def data_socket(self) -> Optional[socket.socket]:
+        return self.data_server.socket
+
+    @property
+    def running(self) -> bool:
+        return self.is_running
+
+    @running.setter
+    def running(self, val: bool) -> None:
+        self.is_running = val
 
     def bind_and_listen(self, backlog: int = 16) -> None:
-        self.control_socket.bind((self.host, self.control_port))
-        self.control_socket.listen(backlog)
-        self.control_port = self.control_socket.getsockname()[1]
+        """Vincula os sockets de controle e dados preparando para aceitação."""
+        self.data_server.bind_and_listen(backlog=backlog)
+        self.control_server.data_port = self.data_server.port
+        self.control_server.bind_and_listen(backlog=backlog)
+        self.is_running = True
 
-        self.data_socket.bind((self.host, self.data_port))
-        self.data_socket.listen(backlog)
-        self.data_port = self.data_socket.getsockname()[1]
-        self.running = True
-
-    def _accept_data_loop(self) -> None:
-        while self.running:
-            try:
-                client_sock, client_addr = self.data_socket.accept()
-                if not self.running:
-                    client_sock.close()
-                    break
-                t = threading.Thread(
-                    target=handle_data_client_connection,
-                    args=(client_sock, client_addr, self.ticket_manager, self.log_path),
-                    daemon=True,
-                )
-                t.start()
-            except OSError:
-                break
-
-    def _accept_control_loop(self) -> None:
-        while self.running:
-            try:
-                client_sock, client_addr = self.control_socket.accept()
-                if not self.running:
-                    client_sock.close()
-                    break
-                client_ip, client_port = client_addr
-                print(f"[+] Conexão de controle aceita de {client_ip}:{client_port}")
-                t = threading.Thread(
-                    target=handle_control_client_connection,
-                    args=(
-                        client_sock,
-                        client_addr,
-                        self.repo,
-                        self.log_path,
-                        self.ticket_manager,
-                        self.data_port,
-                    ),
-                    daemon=True,
-                )
-                t.start()
-            except OSError:
-                break
+    def start(self) -> None:
+        """Inicia os serviços de dados e controle em segundo plano."""
+        if self.is_running:
+            return
+        self.data_server.start()
+        self.control_server.data_port = self.data_server.port
+        self.control_server.start()
+        self.is_running = True
 
     def start_in_background(self) -> None:
-        """Inicia os loops de aceitação de Controle e Dados em threads de segundo plano."""
-        self.bind_and_listen()
-        threading.Thread(target=self._accept_data_loop, daemon=True).start()
-        threading.Thread(target=self._accept_control_loop, daemon=True).start()
+        """Facade retrocompatível para inicialização em segundo plano."""
+        self.start()
+
+    def _accept_data_loop(self) -> None:
+        self.data_server._accept_loop()
+
+    def _accept_control_loop(self) -> None:
+        self.control_server._accept_loop()
 
     def serve_forever(self) -> None:
-        """Inicia o servidor bloqueando a thread principal no loop de Controle."""
-        self.bind_and_listen()
-        print("=" * 65)
-        print("[*] Servidor TCP Dual-Protocol Homelab iniciado com sucesso!")
-        print(f"[*] Canal 1 (Controle Persistente + Framing): {self.host}:{self.control_port}")
-        print(f"[*] Canal 2 (Dados/Mídia em Chunks 64KB):     {self.host}:{self.data_port}")
-        print(f"[*] Banco de dados SQLite: {self.db_path}")
-        print(f"[*] Diretório de uploads:  {self.uploads_dir}")
-        print(f"[*] Arquivo de log:        {self.log_path}")
-        print("[*] Pressione Ctrl+C para encerrar.")
-        print("=" * 65)
-
-        data_thread = threading.Thread(target=self._accept_data_loop, daemon=True)
-        data_thread.start()
+        """Inicia o servidor e bloqueia a thread principal até encerramento."""
+        self.start()
+        logger.info("=" * 65)
+        logger.info("Servidor TCP Dual-Protocol Homelab iniciado com sucesso!")
+        logger.info("Canal 1 (Controle Persistente + Framing): %s:%s", self.host, self.control_port)
+        logger.info("Canal 2 (Dados/Mídia em Chunks 64KB):     %s:%s", self.host, self.data_port)
+        logger.info("Banco de dados SQLite: %s", self.db_path)
+        logger.info("Diretório de uploads:  %s", self.uploads_dir)
+        logger.info("Arquivo de log:        %s", self.log_path)
+        logger.info("Pressione Ctrl+C para encerrar.")
+        logger.info("=" * 65)
 
         try:
-            self._accept_control_loop()
+            while self.is_running:
+                threading.Event().wait(0.5)
         except KeyboardInterrupt:
-            print("\n[*] Servidor interrompido pelo usuário (SIGINT). Encerrando...")
+            logger.info("Servidor interrompido pelo usuário (SIGINT). Encerrando...")
         finally:
             self.stop()
-            print("[*] Sockets do servidor finalizados com sucesso.")
+            logger.info("Sockets do servidor finalizados com sucesso.")
 
     def stop(self) -> None:
-        self.running = False
-        for sock in (self.control_socket, self.data_socket):
-            try:
-                sock.close()
-            except Exception:
-                pass
+        """Encerra ambos os serviços de controle e dados."""
+        self.is_running = False
+        self.control_server.stop()
+        self.data_server.stop()
+
+    def __enter__(self) -> "HomelabServer":
+        self.start()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        self.stop()
+
+
+# Facades retrocompatíveis para clientes e testes legados
+DualChannelServer = HomelabServer
+
 
 
 def start_server(
