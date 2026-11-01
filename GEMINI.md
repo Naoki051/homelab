@@ -3,6 +3,7 @@
 Este projeto utiliza regras de governança e guard rails documentadas em:
 - [Fluxo de Trabalho e Guard Rails por Branch](.gemini/rules/branch-workflow.md)
 - [Diretrizes de Commits, Proteção da Main e Actions](.gemini/rules/commit-rules.md)
+- [Catálogo de Comandos Úteis e Operações](.gemini/rules/commands.md)
 
 ## Regras Ativas:
 
@@ -20,3 +21,6 @@ Este projeto utiliza regras de governança e guard rails documentadas em:
    - Realizar commits atômicos e progressivos por actions/checklist conforme detalhado em [.gemini/rules/commit-rules.md](.gemini/rules/commit-rules.md).
    - Padrão obrigatório: **Conventional Commits** (`feat:`, `chore:`, `docs:`, `test:`, `fix:`, `refactor:`, `perf:`).
    - Validar testes e funcionamento antes de cada commit.
+
+4. **Execução Padronizada de Comandos:**
+   - Utilizar o [Catálogo de Comandos Úteis](.gemini/rules/commands.md) para execução de rotinas de infraestrutura, pré-voo, testes, manutenção e daemons.
