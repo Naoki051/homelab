@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 try:
+    from app.config import ServerConfig, load_server_config
     from app.database import ClientRepository
     from app.protocol import (
         CHUNK_SIZE,
@@ -33,6 +34,7 @@ try:
         generate_upload_ticket,
     )
 except ImportError:
+    from config import ServerConfig, load_server_config
     from database import ClientRepository
     from protocol import (
         CHUNK_SIZE,
@@ -44,13 +46,15 @@ except ImportError:
         generate_upload_ticket,
     )
 
-DEFAULT_HOST = "0.0.0.0"
-DEFAULT_PORT = 9000
-DEFAULT_DATA_PORT = 9001
-DEFAULT_LOG_PATH = Path(__file__).resolve().parent / "logs" / "server_messages.log"
-DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "homelab.db"
-DEFAULT_UPLOADS_DIR = Path(__file__).resolve().parent / "data" / "uploads"
-BUFFER_SIZE = 4096
+_initial_server_config = load_server_config()
+DEFAULT_HOST = _initial_server_config.host
+DEFAULT_PORT = _initial_server_config.control_port
+DEFAULT_DATA_PORT = _initial_server_config.data_port
+DEFAULT_LOG_PATH = _initial_server_config.log_path
+DEFAULT_DB_PATH = _initial_server_config.db_path
+DEFAULT_UPLOADS_DIR = _initial_server_config.uploads_dir
+DEFAULT_HANDSHAKE_KEY = _initial_server_config.handshake_key
+BUFFER_SIZE = _initial_server_config.buffer_size
 
 
 @dataclass
@@ -649,47 +653,60 @@ def start_server(
 
 
 def main() -> None:
+    # Pré-processamento de argumentos para verificar se --env-file foi informado
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--env-file", type=str, default=None)
+    pre_args, remaining_argv = pre_parser.parse_known_args()
+
+    cfg = load_server_config(env_file=pre_args.env_file, override=True if pre_args.env_file else False)
+
     parser = argparse.ArgumentParser(
         description="Servidor TCP Dual-Protocol Homelab (Controle Persistente + Mídia em Chunks)."
     )
     parser.add_argument(
+        "--env-file",
+        type=str,
+        default=pre_args.env_file,
+        help="Caminho para arquivo de variáveis de ambiente customizado (ex: server.env, .env.prod)",
+    )
+    parser.add_argument(
         "--host",
         type=str,
-        default=DEFAULT_HOST,
-        help=f"Endereço de escuta (padrão: {DEFAULT_HOST})",
+        default=cfg.host,
+        help=f"Endereço de escuta (padrão: {cfg.host})",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=DEFAULT_PORT,
-        help=f"Porta do Canal de Controle (padrão: {DEFAULT_PORT})",
+        default=cfg.control_port,
+        help=f"Porta do Canal de Controle (padrão: {cfg.control_port})",
     )
     parser.add_argument(
         "--data-port",
         type=int,
-        default=DEFAULT_DATA_PORT,
-        help=f"Porta do Canal de Dados/Mídia em Chunks (padrão: {DEFAULT_DATA_PORT})",
+        default=cfg.data_port,
+        help=f"Porta do Canal de Dados/Mídia em Chunks (padrão: {cfg.data_port})",
     )
     parser.add_argument(
         "--log",
         type=Path,
-        default=DEFAULT_LOG_PATH,
-        help=f"Caminho do arquivo de log (padrão: {DEFAULT_LOG_PATH})",
+        default=cfg.log_path,
+        help=f"Caminho do arquivo de log (padrão: {cfg.log_path})",
     )
     parser.add_argument(
         "--db",
         type=Path,
-        default=DEFAULT_DB_PATH,
-        help=f"Caminho do banco SQLite (padrão: {DEFAULT_DB_PATH})",
+        default=cfg.db_path,
+        help=f"Caminho do banco SQLite (padrão: {cfg.db_path})",
     )
     parser.add_argument(
         "--uploads-dir",
         type=Path,
-        default=DEFAULT_UPLOADS_DIR,
-        help=f"Diretório para salvar uploads de mídia (padrão: {DEFAULT_UPLOADS_DIR})",
+        default=cfg.uploads_dir,
+        help=f"Diretório para salvar uploads de mídia (padrão: {cfg.uploads_dir})",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(remaining_argv)
     start_server(
         host=args.host,
         port=args.port,
