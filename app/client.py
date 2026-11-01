@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 try:
     from app.client_session import Session
+    from app.config import ClientConfig, load_client_config
     from app.protocol import (
         CHUNK_SIZE,
         CONTROL_MAGIC,
@@ -31,6 +32,7 @@ try:
     )
 except ImportError:
     from client_session import Session
+    from config import ClientConfig, load_client_config
     from protocol import (
         CHUNK_SIZE,
         CONTROL_MAGIC,
@@ -39,11 +41,16 @@ except ImportError:
         Message,
     )
 
-DEFAULT_HOST = "192.168.0.246"
-DEFAULT_PORT = 9000
-DEFAULT_DATA_PORT = 9001
-TIMEOUT_SECONDS = 10.0
-BUFFER_SIZE = 4096
+_initial_client_config = load_client_config()
+DEFAULT_HOST = _initial_client_config.host
+DEFAULT_PORT = _initial_client_config.control_port
+DEFAULT_DATA_PORT = _initial_client_config.data_port
+DEFAULT_HANDSHAKE_KEY = _initial_client_config.handshake_key
+TIMEOUT_SECONDS = _initial_client_config.timeout
+BUFFER_SIZE = _initial_client_config.buffer_size
+CHUNK_SIZE = _initial_client_config.chunk_size
+DEFAULT_SESSION_FILE = _initial_client_config.session_path
+Session.DEFAULT_SESSION_FILE = DEFAULT_SESSION_FILE
 
 
 def _compute_file_sha256(file_path: Path) -> str:
@@ -515,26 +522,40 @@ def run_auth_flow(
 
 
 def main() -> None:
+    # Pré-processamento de argumentos para verificar se --env-file foi informado
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--env-file", type=str, default=None)
+    pre_args, remaining_argv = pre_parser.parse_known_args()
+
+    cfg = load_client_config(env_file=pre_args.env_file, override=True if pre_args.env_file else False)
+    Session.DEFAULT_SESSION_FILE = cfg.session_path
+
     parser = argparse.ArgumentParser(
         description="Cliente TCP Dual-Protocol Homelab (Controle Persistente + Upload em Chunks de 64KB)."
     )
     parser.add_argument(
+        "--env-file",
+        type=str,
+        default=pre_args.env_file,
+        help="Caminho para arquivo de variáveis de ambiente customizado (ex: client.env, .env.prod)",
+    )
+    parser.add_argument(
         "--host",
         type=str,
-        default=DEFAULT_HOST,
-        help=f"Endereço IP do servidor TCP (padrão: {DEFAULT_HOST})",
+        default=cfg.host,
+        help=f"Endereço IP do servidor TCP (padrão: {cfg.host})",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=DEFAULT_PORT,
-        help=f"Porta do Canal de Controle (padrão: {DEFAULT_PORT})",
+        default=cfg.control_port,
+        help=f"Porta do Canal de Controle (padrão: {cfg.control_port})",
     )
     parser.add_argument(
         "--data-port",
         type=int,
-        default=DEFAULT_DATA_PORT,
-        help=f"Porta do Canal de Dados/Mídia (padrão: {DEFAULT_DATA_PORT})",
+        default=cfg.data_port,
+        help=f"Porta do Canal de Dados/Mídia (padrão: {cfg.data_port})",
     )
     parser.add_argument(
         "-m",
@@ -549,9 +570,9 @@ def main() -> None:
         help="Caminho de arquivo/imagem opcional para upload em chunks de 64KB após autenticação.",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(remaining_argv)
 
-    with ControlConnection(host=args.host, port=args.port) as conn:
+    with ControlConnection(host=args.host, port=args.port, timeout=cfg.timeout) as conn:
         auth_credentials = run_auth_flow(host=args.host, port=args.port, conn=conn)
         if not auth_credentials:
             sys.exit(0)
