@@ -70,6 +70,18 @@ except ImportError:
 
 logger = get_logger(__name__)
 
+__all__: List[str] = [
+    "HomelabClient",
+    "ControlConnection",
+    "send_network_message",
+    "do_login_request",
+    "do_register_request",
+    "send_user_message",
+    "run_auth_flow",
+    "interactive_menu",
+    "main",
+]
+
 
 _initial_client_config = load_client_config()
 DEFAULT_HOST = _initial_client_config.host
@@ -101,12 +113,19 @@ class ControlConnection:
     com Framing Binário e rotação automática para a `session_key` dinâmica após autenticação.
     """
 
+    host: str
+    port: int
+    timeout: float
+    sock: Optional[socket.socket]
+    session_key: bytes
+    username: Optional[str]
+
     def __init__(
         self,
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         timeout: float = TIMEOUT_SECONDS,
-    ):
+    ) -> None:
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -218,7 +237,7 @@ class ControlConnection:
 
     def upload_file(
         self,
-        file_path: Path,
+        file_path: Union[Path, str],
         data_port: Optional[int] = None,
         secret_hash: str = "",
     ) -> Tuple[bool, str]:
@@ -327,7 +346,12 @@ class ControlConnection:
         self.connect()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         self.close()
 
 
