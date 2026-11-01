@@ -7,6 +7,7 @@ Servidor TCP Dual-Channel para Homelab com Autenticação, Framing Binário, Chu
 
 from abc import ABC, abstractmethod
 import argparse
+import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
@@ -607,6 +608,7 @@ class ControlServer(BaseNetworkService):
         self.socket.bind((self.host, self.port))
         self.socket.listen(backlog)
         self.port = self.socket.getsockname()[1]
+        self.socket.settimeout(1.0)
         self.is_running = True
 
     def start(self) -> None:
@@ -621,24 +623,38 @@ class ControlServer(BaseNetworkService):
 
     def _accept_loop(self) -> None:
         """Loop de aceitação de conexões de clientes de controle."""
+        if self.socket is not None:
+            self.socket.settimeout(1.0)
         while self.is_running:
             try:
                 if self.socket is None:
                     break
                 client_sock, client_addr = self.socket.accept()
-                if not self.is_running:
-                    client_sock.close()
-                    break
-                client_ip, client_port = client_addr
-                print(f"[+] Conexão de controle aceita de {client_ip}:{client_port}")
-                t = threading.Thread(
-                    target=self.handle_connection,
-                    args=(client_sock, client_addr),
-                    daemon=True,
-                )
-                t.start()
+            except (socket.timeout, TimeoutError):
+                continue
             except OSError:
                 break
+
+            if not self.is_running:
+                client_sock.close()
+                break
+            client_ip, client_port = client_addr
+            print(f"[+] Conexão de controle aceita de {client_ip}:{client_port}")
+            t = threading.Thread(
+                target=self._handle_client_thread,
+                args=(client_sock, client_addr),
+                daemon=True,
+            )
+            t.start()
+
+    def _handle_client_thread(
+        self,
+        client_sock: socket.socket,
+        client_addr: Tuple[str, int],
+    ) -> None:
+        """Gerencia deterministicamente a conexão do cliente com context manager."""
+        with contextlib.closing(client_sock):
+            self.handle_connection(client_sock, client_addr)
 
     def handle_connection(
         self,
@@ -664,6 +680,9 @@ class ControlServer(BaseNetworkService):
             except OSError:
                 pass
             self.socket = None
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+            self._thread = None
 
 
 class DataServer(BaseNetworkService):
@@ -699,6 +718,7 @@ class DataServer(BaseNetworkService):
         self.socket.bind((self.host, self.port))
         self.socket.listen(backlog)
         self.port = self.socket.getsockname()[1]
+        self.socket.settimeout(1.0)
         self.is_running = True
 
     def start(self) -> None:
@@ -713,22 +733,36 @@ class DataServer(BaseNetworkService):
 
     def _accept_loop(self) -> None:
         """Loop de aceitação de conexões de upload de dados."""
+        if self.socket is not None:
+            self.socket.settimeout(1.0)
         while self.is_running:
             try:
                 if self.socket is None:
                     break
                 client_sock, client_addr = self.socket.accept()
-                if not self.is_running:
-                    client_sock.close()
-                    break
-                t = threading.Thread(
-                    target=self.handle_chunk_stream,
-                    args=(client_sock, client_addr),
-                    daemon=True,
-                )
-                t.start()
+            except (socket.timeout, TimeoutError):
+                continue
             except OSError:
                 break
+
+            if not self.is_running:
+                client_sock.close()
+                break
+            t = threading.Thread(
+                target=self._handle_client_thread,
+                args=(client_sock, client_addr),
+                daemon=True,
+            )
+            t.start()
+
+    def _handle_client_thread(
+        self,
+        client_sock: socket.socket,
+        client_addr: Tuple[str, int],
+    ) -> None:
+        """Gerencia deterministicamente a conexão do cliente de dados com context manager."""
+        with contextlib.closing(client_sock):
+            self.handle_chunk_stream(client_sock, client_addr)
 
     def handle_chunk_stream(
         self,
@@ -752,6 +786,9 @@ class DataServer(BaseNetworkService):
             except OSError:
                 pass
             self.socket = None
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+            self._thread = None
 
 
 class HomelabServer:
