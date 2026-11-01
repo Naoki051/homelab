@@ -17,7 +17,8 @@ from pathlib import Path
 import socket
 import sys
 import threading
-from typing import Dict, Optional, Set, Tuple
+from types import TracebackType
+from typing import Dict, List, Optional, Set, Tuple, Type
 
 # Garante que a raiz do projeto esteja no sys.path para suportar execução a partir de qualquer diretório
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -100,7 +101,7 @@ class UploadTicket:
 class UploadTicketManager:
     """Gerenciador thread-safe de tickets de upload emitidos pelo Canal de Controle."""
 
-    def __init__(self, uploads_dir: Path = DEFAULT_UPLOADS_DIR):
+    def __init__(self, uploads_dir: Path = DEFAULT_UPLOADS_DIR) -> None:
         self.uploads_dir = uploads_dir
         self._tickets: Dict[str, UploadTicket] = {}
         self._lock = threading.Lock()
@@ -974,9 +975,9 @@ class HomelabServer:
 
     def __exit__(
         self,
-        exc_type: Optional[type],
+        exc_type: Optional[Type[BaseException]],
         exc_val: Optional[BaseException],
-        exc_tb: Optional[object],
+        exc_tb: Optional[TracebackType],
     ) -> None:
         self.stop()
 
