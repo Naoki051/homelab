@@ -63,6 +63,8 @@ A documentação está organizada entre **Infraestrutura do Homelab** e **Aplica
 * [**001. Conexão TCP via Sockets e Persistência de Logs**](docs/app/001-connection-tcp.md): Especificação do socket TCP puro na porta 9000 e gravação em arquivo.
 * [**002. Definição das Stacks de Infraestrutura e Software**](docs/app/002-stack-definicao-e-arquitetura.md): Diretrizes oficiais de arquitetura, hardware e stack oficial em Python 3.
 * [**003. Autenticação de Clientes, Classes OO e Quick Login**](docs/app/003-client-auth-and-storage.md): Especificação da tabela `clients` em SQLite, classes `Client`, `Session` e `Message`, e documento NoSQL para Quick Login.
+* [**004. Protocolos de Controle e Dados (Framing Persistente e Chunks)**](docs/app/004-protocolos-controle-e-dados.md): Framing binário de 40B, chave de sessão dinâmica HMAC-SHA256 e upload de arquivos em chunks indexados de 64KB.
+* [**005. Gerenciamento de Configurações e Variáveis de Ambiente**](docs/app/005-gerenciamento-de-configuracoes-e-env.md): Suporte a `server.env`, `client.env`, fallback para `os.environ`, precedência em camadas e suporte a fail fast.
 
 ---
 
