@@ -89,7 +89,7 @@ class TestConfigManagement(unittest.TestCase):
 
         try:
             cfg = load_client_config(env_file=empty_path, override=True)
-            self.assertIn(cfg.host, ("192.168.0.246", "127.0.0.1"))
+            self.assertEqual(cfg.host, "127.0.0.1")
             self.assertEqual(cfg.control_port, 9000)
             self.assertEqual(cfg.data_port, 9001)
             self.assertEqual(cfg.chunk_size, 65536)

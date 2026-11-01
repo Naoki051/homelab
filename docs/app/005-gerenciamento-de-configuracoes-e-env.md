@@ -9,7 +9,7 @@
 
 ## 1. Visão Geral e Motivação
 
-Nas fases iniciais do Homelab, parâmetros de rede e infraestrutura — tais como endereços IP de bind (`0.0.0.0`) e destino (`192.168.0.246`), portas de escuta (`9000` e `9001`), timeouts, caminhos de banco SQLite e chave secreta de handshake HMAC — estavam definidos diretamente como constantes fixas nos arquivos de código-fonte (`server.py`, `client.py` e `protocol.py`).
+Nas fases iniciais do Homelab, parâmetros de rede e infraestrutura — tais como endereços IP de bind (`0.0.0.0`) e destino (`127.0.0.1`), portas de escuta (`9000` e `9001`), timeouts, caminhos de banco SQLite e chave secreta de handshake HMAC — estavam definidos diretamente como constantes fixas nos arquivos de código-fonte (`server.py`, `client.py` e `protocol.py`).
 
 Isso exigia edição manual de código a cada mudança de ambiente (ex: alternar entre rede Wi-Fi local do celular e loopback local para testes), aumentando o risco de commits acidentais de dados de rede ou credenciais.
 
@@ -57,7 +57,7 @@ flowchart LR
 | Variável | Escopo | Tipo | Padrão (Fallback) | Descrição |
 | :--- | :--- | :--- | :--- | :--- |
 | `HOMELAB_SERVER_HOST` | Servidor | `str` | `0.0.0.0` | Endereço IP onde o servidor aguarda conexões |
-| `HOMELAB_CLIENT_TARGET_HOST` | Cliente | `str` | `192.168.0.246` | IP do servidor Homelab remoto |
+| `HOMELAB_CLIENT_TARGET_HOST` | Cliente | `str` | `127.0.0.1` | IP do servidor Homelab remoto |
 | `HOMELAB_CONTROL_PORT` | Ambos | `int` | `9000` | Porta TCP do Canal de Controle Persistente |
 | `HOMELAB_DATA_PORT` | Ambos | `int` | `9001` | Porta TCP do Canal de Dados e Mídia |
 | `HOMELAB_HANDSHAKE_KEY` | Ambos | `str/bytes` | `homelab-initial-handshake-key-32` | Chave prévia para enquadramento inicial HMAC |

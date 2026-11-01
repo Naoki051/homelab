@@ -248,7 +248,7 @@ def load_client_config(
     _load_env_if_present(resolved_env, override=override)
 
     # Fallback de host: se HOMELAB_CLIENT_TARGET_HOST não estiver definido, verifica HOMELAB_SERVER_HOST
-    target_host_default = os.environ.get("HOMELAB_SERVER_HOST", "192.168.0.246")
+    target_host_default = os.environ.get("HOMELAB_SERVER_HOST", "127.0.0.1")
 
     default_session_path = REPO_ROOT / "app" / "data" / "client_session.json"
     default_handshake_key = b"homelab-initial-handshake-key-32"
