@@ -8,12 +8,15 @@ Oferece suporte a:
 """
 
 import argparse
+import contextlib
 import getpass
 import hashlib
+import json
 from pathlib import Path
 import socket
 import sys
-from typing import Optional, Tuple
+from types import TracebackType
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 # Garante que a raiz do projeto esteja no sys.path para suportar execução a partir de qualquer diretório
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -23,6 +26,18 @@ if str(REPO_ROOT) not in sys.path:
 try:
     from app.client_session import Session
     from app.config import ClientConfig, load_client_config
+    from app.exceptions import (
+        AuthenticationError,
+        HMACVerificationError,
+        HomelabError,
+        NetworkTimeoutError,
+        ProtocolError,
+        SessionExpiredError,
+        StorageError,
+        mask_password,
+        mask_secret,
+    )
+    from app.logging import get_logger
     from app.protocol import (
         CHUNK_SIZE,
         CONTROL_MAGIC,
@@ -31,15 +46,42 @@ try:
         Message,
     )
 except ImportError:
-    from client_session import Session
-    from config import ClientConfig, load_client_config
-    from protocol import (
+    from client_session import Session  # type: ignore
+    from config import ClientConfig, load_client_config  # type: ignore
+    from exceptions import (  # type: ignore
+        AuthenticationError,
+        HMACVerificationError,
+        HomelabError,
+        NetworkTimeoutError,
+        ProtocolError,
+        SessionExpiredError,
+        StorageError,
+        mask_password,
+        mask_secret,
+    )
+    from logging_compat import get_logger  # type: ignore
+    from protocol import (  # type: ignore
         CHUNK_SIZE,
         CONTROL_MAGIC,
         DEFAULT_HANDSHAKE_KEY,
         MediaChunk,
         Message,
     )
+
+logger = get_logger(__name__)
+
+__all__: List[str] = [
+    "HomelabClient",
+    "ControlConnection",
+    "send_network_message",
+    "do_login_request",
+    "do_register_request",
+    "send_user_message",
+    "run_auth_flow",
+    "interactive_menu",
+    "main",
+]
+
 
 _initial_client_config = load_client_config()
 DEFAULT_HOST = _initial_client_config.host
@@ -71,12 +113,19 @@ class ControlConnection:
     com Framing Binário e rotação automática para a `session_key` dinâmica após autenticação.
     """
 
+    host: str
+    port: int
+    timeout: float
+    sock: Optional[socket.socket]
+    session_key: bytes
+    username: Optional[str]
+
     def __init__(
         self,
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         timeout: float = TIMEOUT_SECONDS,
-    ):
+    ) -> None:
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -128,7 +177,18 @@ class ControlConnection:
                 self.session_key = bytes.fromhex(new_key_hex)
 
             return resp
-        except Exception as e:
+        except (
+            ConnectionResetError,
+            BrokenPipeError,
+            TimeoutError,
+            socket.timeout,
+            OSError,
+            ProtocolError,
+            HMACVerificationError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as e:
+            logger.error("Erro na conexão persistente de controle: %s", e)
             print(f"\n[!] Erro na conexão persistente de controle: {e}", file=sys.stderr)
             self.close()
             return None
@@ -177,7 +237,7 @@ class ControlConnection:
 
     def upload_file(
         self,
-        file_path: Path,
+        file_path: Union[Path, str],
         data_port: Optional[int] = None,
         secret_hash: str = "",
     ) -> Tuple[bool, str]:
@@ -213,33 +273,50 @@ class ControlConnection:
         target_data_port = data_port or int(resp.payload.get("data_port", DEFAULT_DATA_PORT))
         total_chunks = int(resp.payload.get("total_chunks", 1))
 
+        logger.info(
+            "Iniciando upload de '%s' (%d bytes em %d chunks de até 64KB, ticket=%s) via Canal de Dados %s:%s...",
+            path.name,
+            file_size,
+            total_chunks,
+            mask_secret(ticket_hex),
+            self.host,
+            target_data_port,
+        )
         print(
             f"[*] Iniciando upload de '{path.name}' ({file_size} bytes em {total_chunks} chunks de até 64KB) "
             f"via Canal de Dados {self.host}:{target_data_port}..."
         )
 
-        data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        data_sock.settimeout(self.timeout)
-        try:
-            data_sock.connect((self.host, target_data_port))
-            for chunk in MediaChunk.slice_file(path, ticket=ticket_hex, chunk_size=CHUNK_SIZE):
-                chunk.send(data_sock, hmac_key=self.session_key)
+        with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as data_sock:
+            data_sock.settimeout(self.timeout)
+            try:
+                data_sock.connect((self.host, target_data_port))
+                for chunk in MediaChunk.slice_file(path, ticket=ticket_hex, chunk_size=CHUNK_SIZE):
+                    chunk.send(data_sock, hmac_key=self.session_key)
 
-            final_resp = Message.recv_framed(data_sock, hmac_key=self.session_key)
-            if not final_resp:
-                return False, "Canal de dados fechou sem enviar confirmação final."
+                final_resp = Message.recv_framed(data_sock, hmac_key=self.session_key)
+                if not final_resp:
+                    return False, "Canal de dados fechou sem enviar confirmação final."
 
-            ok = final_resp.payload.get("status") == Message.STATUS_OK
-            msg = final_resp.payload.get("message", "")
-            if ok:
-                print(f"[✓] {msg}")
-            else:
-                print(f"[!] Erro no upload: {msg}", file=sys.stderr)
-            return ok, msg
-        except OSError as e:
-            return False, f"Erro de rede no Canal de Dados: {e}"
-        finally:
-            data_sock.close()
+                ok = final_resp.payload.get("status") == Message.STATUS_OK
+                msg = final_resp.payload.get("message", "")
+                if ok:
+                    print(f"[✓] {msg}")
+                else:
+                    logger.error("Erro retornado pelo servidor no upload: %s", msg)
+                    print(f"[!] Erro no upload: {msg}", file=sys.stderr)
+                return ok, msg
+            except (
+                ConnectionResetError,
+                BrokenPipeError,
+                TimeoutError,
+                socket.timeout,
+                OSError,
+                ProtocolError,
+                HMACVerificationError,
+            ) as e:
+                logger.error("Erro de rede no Canal de Dados ao enviar '%s': %s", path.name, e)
+                return False, f"Erro de rede no Canal de Dados: {e}"
 
     def close(self) -> None:
         if self.sock is not None:
@@ -247,11 +324,20 @@ class ControlConnection:
                 logout_msg = Message(action=Message.ACTION_LOGOUT, payload={})
                 logout_msg.send_framed(self.sock, hmac_key=self.session_key)
                 Message.recv_framed(self.sock, hmac_key=self.session_key)
-            except Exception:
+            except (
+                ConnectionResetError,
+                BrokenPipeError,
+                TimeoutError,
+                socket.timeout,
+                OSError,
+                ProtocolError,
+                HMACVerificationError,
+                ValueError,
+            ):
                 pass
             try:
                 self.sock.close()
-            except Exception:
+            except OSError:
                 pass
             self.sock = None
             self.session_key = DEFAULT_HANDSHAKE_KEY
@@ -260,8 +346,234 @@ class ControlConnection:
         self.connect()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         self.close()
+
+
+class HomelabClient:
+    """Cliente TCP Dual-Protocol para o Homelab com arquitetura orientada a objetos (DEBT-01).
+
+    Encapsula as configurações operacionais (`ClientConfig`), o estado da sessão
+    local (`Session`) e o gerenciamento da conexão persistente no Canal de Controle
+    (`ControlConnection`), oferecendo suporte a Context Manager determinístico.
+    """
+
+    config: ClientConfig
+    session: Optional[Session]
+    control_conn: Optional[ControlConnection]
+    username: Optional[str]
+    secret_hash: Optional[str]
+
+    def __init__(
+        self,
+        config: Optional[ClientConfig] = None,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        control_port: Optional[int] = None,
+        data_port: Optional[int] = None,
+        timeout: Optional[float] = None,
+        session: Optional[Session] = None,
+        session_path: Optional[Union[Path, str]] = None,
+        control_conn: Optional[ControlConnection] = None,
+        env_file: Optional[Union[Path, str]] = None,
+    ) -> None:
+        if config is not None:
+            self.config = config
+        else:
+            self.config = load_client_config(env_file=env_file)
+
+        if host is not None:
+            self.config.host = host
+        if control_port is not None:
+            self.config.control_port = control_port
+        elif port is not None:
+            self.config.control_port = port
+        if data_port is not None:
+            self.config.data_port = data_port
+        if timeout is not None:
+            self.config.timeout = timeout
+        if session_path is not None:
+            self.config.session_path = Path(session_path)
+
+        self.session = session
+        if self.session is None and self.config.session_path.is_file():
+            self.session = Session.load(path=self.config.session_path)
+
+        self.control_conn = control_conn
+        self.username = self.session.last_username if (self.session and self.session.is_valid()) else None
+        self.secret_hash = self.session.last_password if (self.session and self.session.is_valid()) else None
+
+    @property
+    def host(self) -> str:
+        return self.config.host
+
+    @property
+    def control_port(self) -> int:
+        return self.config.control_port
+
+    @property
+    def data_port(self) -> int:
+        return self.config.data_port
+
+    @property
+    def is_connected(self) -> bool:
+        """Indica se a conexão de controle está estabelecida com o servidor."""
+        return self.control_conn is not None and self.control_conn.sock is not None
+
+    @property
+    def session_key(self) -> bytes:
+        """Retorna a chave HMAC ativa da conexão de controle."""
+        if self.control_conn is not None:
+            return self.control_conn.session_key
+        return self.config.handshake_key
+
+    def connect(self) -> bool:
+        """Abre a conexão TCP persistente no Canal de Controle se ainda não estiver aberta."""
+        if self.control_conn is None:
+            self.control_conn = ControlConnection(
+                host=self.config.host,
+                port=self.config.control_port,
+                timeout=self.config.timeout,
+            )
+        ok = self.control_conn.connect()
+        if ok and self.username:
+            self.control_conn.username = self.username
+        return ok
+
+    def login(
+        self,
+        username: str,
+        password: Optional[str] = None,
+        is_already_derived: bool = False,
+    ) -> Tuple[bool, str]:
+        """Autentica o cliente junto ao servidor via Canal de Controle.
+
+        Suporta senha em texto puro, segredo já derivado ou Quick Login com sessão em cache.
+        """
+        if password is not None:
+            secret_hash = password if is_already_derived else Session.derive_secret(username, password)
+        elif self.session and self.session.is_valid() and self.session.last_username == username:
+            secret_hash = self.session.last_password
+        else:
+            return False, "Senha não informada e nenhuma sessão válida disponível."
+
+        if not self.connect() or self.control_conn is None:
+            return False, "Falha na conexão com o servidor."
+
+        ok, reason = self.control_conn.login(username, secret_hash)
+        if ok:
+            self.username = username
+            self.secret_hash = secret_hash
+            self.session = Session.create(
+                username,
+                secret_hash,
+                is_already_derived=True,
+                days=Session.DEFAULT_TTL_DAYS,
+            )
+            self.session.save(path=self.config.session_path)
+            logger.info("Login realizado com sucesso para '%s'", username)
+        else:
+            logger.warning("Falha no login para '%s': %s", username, reason)
+
+        return ok, reason
+
+    def register(
+        self,
+        username: str,
+        password: Optional[str] = None,
+        is_already_derived: bool = False,
+    ) -> Tuple[bool, str]:
+        """Cadastra nova conta de cliente e persiste a sessão local com auto-login."""
+        secret_hash = password or "" if is_already_derived else Session.derive_secret(username, password or "")
+
+        if not self.connect() or self.control_conn is None:
+            return False, "Falha na conexão com o servidor."
+
+        ok, reason = self.control_conn.register(username, secret_hash)
+        if ok:
+            self.username = username
+            self.secret_hash = secret_hash
+            self.session = Session.create(
+                username,
+                secret_hash,
+                is_already_derived=True,
+                days=Session.DEFAULT_TTL_DAYS,
+            )
+            self.session.save(path=self.config.session_path)
+            logger.info("Conta '%s' cadastrada com sucesso", username)
+        else:
+            logger.warning("Falha no cadastro para '%s': %s", username, reason)
+
+        return ok, reason
+
+    def send_message(self, text: str) -> Tuple[bool, str]:
+        """Envia mensagem de texto autenticada ao servidor via conexão persistente."""
+        if not self.username:
+            return False, "Cliente não autenticado. Faça login antes de enviar mensagens."
+
+        if not self.connect() or self.control_conn is None:
+            return False, "Falha na conexão com o servidor."
+
+        req = Message(
+            action=Message.ACTION_SEND,
+            payload={
+                "username": self.username,
+                "password": self.secret_hash or "",
+                "text": text,
+            },
+        )
+        resp = self.control_conn.send_request(req)
+        if not resp:
+            return False, "Sem resposta do servidor."
+
+        status = resp.payload.get("status")
+        msg = resp.payload.get("message", "")
+        ok = status == Message.STATUS_OK
+        return ok, msg
+
+    def upload_file(
+        self,
+        file_path: Union[str, Path],
+        data_port: Optional[int] = None,
+    ) -> Tuple[bool, str]:
+        """Realiza upload de arquivo fatiado em chunks de 64KB no Canal de Dados."""
+        if not self.username:
+            return False, "Cliente não autenticado. Faça login antes de enviar arquivos."
+
+        if not self.connect() or self.control_conn is None:
+            return False, "Falha na conexão com o servidor."
+
+        path = Path(file_path)
+        target_port = data_port or self.config.data_port
+        return self.control_conn.upload_file(
+            path,
+            data_port=target_port,
+            secret_hash=self.secret_hash or "",
+        )
+
+    def close(self) -> None:
+        """Fecha determinísticamente a conexão TCP de controle."""
+        if self.control_conn is not None:
+            self.control_conn.close()
+            self.control_conn = None
+
+    def __enter__(self) -> "HomelabClient":
+        self.connect()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        self.close()
+
 
 
 def send_network_message(
@@ -272,50 +584,47 @@ def send_network_message(
     hmac_key: bytes = DEFAULT_HANDSHAKE_KEY,
 ) -> Optional[Message]:
     """Envia uma mensagem pontual (compatível com servidores legados ou modo framed)."""
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.settimeout(TIMEOUT_SECONDS)
-
-    try:
-        client_socket.connect((host, port))
-        if use_framing:
-            message.send_framed(client_socket, hmac_key=hmac_key)
-            return Message.recv_framed(client_socket, hmac_key=hmac_key)
-
-        payload_bytes = message.to_bytes()
-        client_socket.sendall(payload_bytes)
-
-        raw_response = client_socket.recv(BUFFER_SIZE)
-        if not raw_response:
-            return None
-
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as client_socket:
+        client_socket.settimeout(TIMEOUT_SECONDS)
         try:
-            if len(raw_response) >= 40 and raw_response[:2] == CONTROL_MAGIC:
-                return Message.from_frame(raw_response, hmac_key=hmac_key)
-            return Message.from_bytes(raw_response)
-        except Exception:
-            return Message.response(
-                Message.STATUS_OK,
-                raw_response.decode("utf-8", errors="replace").strip(),
-            )
+            client_socket.connect((host, port))
+            if use_framing:
+                message.send_framed(client_socket, hmac_key=hmac_key)
+                return Message.recv_framed(client_socket, hmac_key=hmac_key)
 
-    except ConnectionRefusedError:
-        print(
-            f"\n[!] Erro: Conexão recusada em {host}:{port}. "
-            "Certifique-se de que o servidor está rodando.",
-            file=sys.stderr,
-        )
-        return None
-    except socket.timeout:
-        print(
-            f"\n[!] Erro: Tempo de espera esgotado ({TIMEOUT_SECONDS}s) aguardando {host}:{port}.",
-            file=sys.stderr,
-        )
-        return None
-    except OSError as e:
-        print(f"\n[!] Erro de rede: {e}", file=sys.stderr)
-        return None
-    finally:
-        client_socket.close()
+            payload_bytes = message.to_bytes()
+            client_socket.sendall(payload_bytes)
+
+            raw_response = client_socket.recv(BUFFER_SIZE)
+            if not raw_response:
+                return None
+
+            try:
+                if len(raw_response) >= 40 and raw_response[:2] == CONTROL_MAGIC:
+                    return Message.from_frame(raw_response, hmac_key=hmac_key)
+                return Message.from_bytes(raw_response)
+            except (ProtocolError, HMACVerificationError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+                return Message.response(
+                    Message.STATUS_OK,
+                    raw_response.decode("utf-8", errors="replace").strip(),
+                )
+
+        except ConnectionRefusedError:
+            print(
+                f"\n[!] Erro: Conexão recusada em {host}:{port}. "
+                "Certifique-se de que o servidor está rodando.",
+                file=sys.stderr,
+            )
+            return None
+        except (socket.timeout, TimeoutError):
+            print(
+                f"\n[!] Erro: Tempo de espera esgotado ({TIMEOUT_SECONDS}s) aguardando {host}:{port}.",
+                file=sys.stderr,
+            )
+            return None
+        except OSError as e:
+            print(f"\n[!] Erro de rede: {e}", file=sys.stderr)
+            return None
 
 
 def do_login_request(
@@ -323,9 +632,11 @@ def do_login_request(
     port: int,
     username: str,
     secret_hash: str,
-    conn: Optional[ControlConnection] = None,
+    conn: Optional[Union[ControlConnection, HomelabClient]] = None,
 ) -> Tuple[bool, str]:
     """Envia requisição de autenticação para o servidor (via conexão persistente ou pontual)."""
+    if isinstance(conn, HomelabClient):
+        return conn.login(username, secret_hash, is_already_derived=True)
     if conn is not None:
         return conn.login(username, secret_hash)
 
@@ -347,9 +658,11 @@ def do_register_request(
     port: int,
     username: str,
     secret_hash: str,
-    conn: Optional[ControlConnection] = None,
+    conn: Optional[Union[ControlConnection, HomelabClient]] = None,
 ) -> Tuple[bool, str]:
     """Envia requisição de cadastro explícito para o servidor (via conexão persistente ou pontual)."""
+    if isinstance(conn, HomelabClient):
+        return conn.register(username, secret_hash, is_already_derived=True)
     if conn is not None:
         return conn.register(username, secret_hash)
 
@@ -372,9 +685,16 @@ def send_user_message(
     username: str,
     secret_hash: str,
     text: str,
-    conn: Optional[ControlConnection] = None,
+    conn: Optional[Union[ControlConnection, HomelabClient]] = None,
 ) -> bool:
     """Envia uma mensagem de texto autenticada ao servidor (via conexão persistente ou pontual)."""
+    if isinstance(conn, HomelabClient):
+        ok, msg = conn.send_message(text)
+        if ok:
+            print(f"[<] Resposta do servidor: {msg}")
+            return True
+        print(f"[!] Erro retornado pelo servidor: {msg}", file=sys.stderr)
+        return False
     if conn is not None:
         return conn.send_text(username, text, secret_hash=secret_hash)
 
@@ -398,9 +718,10 @@ def send_user_message(
 
 
 def run_auth_flow(
-    host: str,
-    port: int,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
     conn: Optional[ControlConnection] = None,
+    client: Optional[HomelabClient] = None,
 ) -> Optional[Tuple[str, str]]:
     """
     Executa a interface de terminal para Login ou Cadastro:
@@ -409,6 +730,9 @@ def run_auth_flow(
     3. Sair
     Retorna tupla (username, secret_hash) em caso de sucesso ou None.
     """
+    if client is None:
+        client = HomelabClient(host=host, control_port=port, control_conn=conn)
+
     while True:
         print("\n" + "=" * 55)
         print("          HOMELAB TCP CLIENT - ACESSO")
@@ -425,7 +749,7 @@ def run_auth_flow(
             return None
 
         if choice == "1":
-            session = Session.load()
+            session = client.session or Session.load(path=client.config.session_path)
             if session and session.is_valid():
                 prompt_text = (
                     f"\n[?] Quick login disponível para '{session.last_username}' "
@@ -438,22 +762,15 @@ def run_auth_flow(
 
                 if accept in ("", "s", "sim", "y", "yes"):
                     print(f"[*] Autenticando com Quick Login como '{session.last_username}'...")
-                    ok, reason = do_login_request(
-                        host, port, session.last_username, session.last_password, conn=conn
-                    )
+                    ok, reason = client.login(session.last_username)
                     if ok:
                         print(f"[✓] Quick login aceito com sucesso! Bem-vindo, {session.last_username}.")
-                        Session.create(
-                            session.last_username,
-                            session.last_password,
-                            is_already_derived=True,
-                            days=Session.DEFAULT_TTL_DAYS,
-                        ).save()
                         return session.last_username, session.last_password
                     else:
                         print(f"[!] Falha no Quick Login: {reason}")
                         print("[*] Limpando sessão local inválida...")
-                        Session.clear()
+                        Session.clear(path=client.config.session_path)
+                        client.session = None
 
             print("\n--- 1.2.2 Identificação de Usuário ---")
             try:
@@ -465,17 +782,10 @@ def run_auth_flow(
             except (KeyboardInterrupt, EOFError):
                 return None
 
-            secret_hash = Session.derive_secret(username, password)
-            ok, reason = do_login_request(host, port, username, secret_hash, conn=conn)
+            ok, reason = client.login(username, password)
             if ok:
                 print(f"[✓] Login realizado com sucesso! Bem-vindo, {username}.")
-                Session.create(
-                    username,
-                    secret_hash,
-                    is_already_derived=True,
-                    days=Session.DEFAULT_TTL_DAYS,
-                ).save()
-                return username, secret_hash
+                return username, client.secret_hash or ""
             else:
                 print(f"[!] Falha no login: {reason}")
 
@@ -497,20 +807,13 @@ def run_auth_flow(
             except (KeyboardInterrupt, EOFError):
                 return None
 
-            secret_hash = Session.derive_secret(username, password)
-            ok, reason = do_register_request(host, port, username, secret_hash, conn=conn)
+            ok, reason = client.register(username, password)
             if ok:
                 print(f"[✓] Conta '{username}' criada com sucesso!")
                 print(
                     f"[✓] Auto-login ativado: Sessão local gravada com validade de {Session.DEFAULT_TTL_DAYS} dias."
                 )
-                Session.create(
-                    username,
-                    secret_hash,
-                    is_already_derived=True,
-                    days=Session.DEFAULT_TTL_DAYS,
-                ).save()
-                return username, secret_hash
+                return username, client.secret_hash or ""
             else:
                 print(f"[!] Erro no cadastro: {reason}")
 
@@ -519,6 +822,45 @@ def run_auth_flow(
             return None
         else:
             print("[!] Opção inválida. Digite 1, 2 ou 3.")
+
+
+def interactive_menu(client: HomelabClient) -> None:
+    """Interface interativa de terminal (CLI) desacoplada da camada de rede."""
+    username = client.username or "cliente"
+    print(f"\n[*] Conexão TCP Persistente ativa para '{username}' (HMAC-SHA256 dinâmico).")
+    print("[*] Digite sua mensagem ou use '/upload <caminho_do_arquivo>' para enviar mídia em chunks.")
+    print("[*] Digite 'sair' ou Ctrl+C para encerrar.\n")
+
+    while True:
+        try:
+            user_input = input(f"[{username}] > ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n[*] Sessão interativa finalizada.")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("sair", "exit", "quit"):
+            print("[*] Sessão encerrada pelo usuário.")
+            break
+
+        if user_input.startswith("/upload "):
+            raw_path = user_input[len("/upload ") :].strip()
+            if not raw_path:
+                print("[!] Informe o caminho do arquivo. Exemplo: /upload foto.png")
+                continue
+            ok, msg = client.upload_file(raw_path)
+            if ok:
+                print(f"[✓] {msg}")
+            else:
+                print(f"[!] Erro no upload: {msg}", file=sys.stderr)
+            continue
+
+        ok, msg = client.send_message(user_input)
+        if ok:
+            print(f"[<] Resposta do servidor: {msg}")
+        else:
+            print(f"[!] Erro retornado pelo servidor: {msg}", file=sys.stderr)
 
 
 def main() -> None:
@@ -572,64 +914,38 @@ def main() -> None:
 
     args = parser.parse_args(remaining_argv)
 
-    with ControlConnection(host=args.host, port=args.port, timeout=cfg.timeout) as conn:
-        auth_credentials = run_auth_flow(host=args.host, port=args.port, conn=conn)
+    cfg.host = args.host
+    cfg.control_port = args.port
+    cfg.data_port = args.data_port
+
+    with HomelabClient(config=cfg) as client:
+        auth_credentials = run_auth_flow(client=client)
         if not auth_credentials:
             sys.exit(0)
 
         username, secret_hash = auth_credentials
 
         if args.message:
-            success = send_user_message(
-                host=args.host,
-                port=args.port,
-                username=username,
-                secret_hash=secret_hash,
-                text=args.message,
-                conn=conn,
-            )
+            ok, msg = client.send_message(args.message)
+            if ok:
+                print(f"[<] Resposta do servidor: {msg}")
+            else:
+                print(f"[!] Erro retornado pelo servidor: {msg}", file=sys.stderr)
             if not args.upload:
-                sys.exit(0 if success else 1)
+                sys.exit(0 if ok else 1)
 
         if args.upload:
-            ok, _ = conn.upload_file(args.upload, data_port=args.data_port, secret_hash=secret_hash)
+            ok, msg = client.upload_file(args.upload)
+            if ok:
+                print(f"[✓] {msg}")
+            else:
+                print(f"[!] Erro no upload: {msg}", file=sys.stderr)
             sys.exit(0 if ok else 1)
 
-        print(f"\n[*] Conexão TCP Persistente ativa para '{username}' (HMAC-SHA256 dinâmico).")
-        print("[*] Digite sua mensagem ou use '/upload <caminho_do_arquivo>' para enviar mídia em chunks.")
-        print("[*] Digite 'sair' ou Ctrl+C para encerrar.\n")
-
-        while True:
-            try:
-                user_input = input(f"[{username}] > ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print("\n[*] Sessão interativa finalizada.")
-                break
-
-            if not user_input:
-                continue
-            if user_input.lower() in ("sair", "exit", "quit"):
-                print("[*] Sessão encerrada pelo usuário.")
-                break
-
-            if user_input.startswith("/upload "):
-                raw_path = user_input[len("/upload ") :].strip()
-                if not raw_path:
-                    print("[!] Informe o caminho do arquivo. Exemplo: /upload foto.png")
-                    continue
-                conn.upload_file(Path(raw_path), data_port=args.data_port, secret_hash=secret_hash)
-                continue
-
-            send_user_message(
-                host=args.host,
-                port=args.port,
-                username=username,
-                secret_hash=secret_hash,
-                text=user_input,
-                conn=conn,
-            )
+        interactive_menu(client)
 
     sys.exit(0)
+
 
 
 if __name__ == "__main__":

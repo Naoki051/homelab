@@ -12,11 +12,16 @@ import threading
 import time
 import unittest
 
-from app.client import do_login_request, do_register_request, send_user_message
+from app.client import (
+    HomelabClient,
+    do_login_request,
+    do_register_request,
+    send_user_message,
+)
 from app.client_session import Session
 from app.database import ClientRepository, hash_password, verify_password
 from app.protocol import Message
-from app.server import handle_client_payload
+from app.server import HomelabServer, handle_client_payload
 
 
 class TestProtocolMessage(unittest.TestCase):
@@ -218,5 +223,144 @@ class TestNetworkIntegration(unittest.TestCase):
         self.assertIn("Olá Homelab!", log_content)
 
 
+class TestHomelabClientOO(unittest.TestCase):
+    """Valida a arquitetura orientada a objetos e ciclo de vida de HomelabClient (DEBT-01 e DEBT-03)."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = Path(self.temp_dir) / "client_oo_homelab.db"
+        self.log_path = Path(self.temp_dir) / "client_oo_server.log"
+        self.uploads_dir = Path(self.temp_dir) / "client_oo_uploads"
+        self.session_path = Path(self.temp_dir) / "client_oo_session.json"
+
+        # Inicializa o servidor completo HomelabServer em background em portas efêmeras
+        self.server = HomelabServer(
+            host="127.0.0.1",
+            control_port=0,
+            data_port=0,
+            log_path=self.log_path,
+            db_path=self.db_path,
+            uploads_dir=self.uploads_dir,
+        )
+        self.server.start_in_background()
+
+    def tearDown(self) -> None:
+        self.server.stop()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_client_context_manager_lifecycle(self) -> None:
+        """Valida abertura e fechamento determinístico da conexão via context manager."""
+        client = HomelabClient(
+            host="127.0.0.1",
+            control_port=self.server.control_port,
+            data_port=self.server.data_port,
+            session_path=self.session_path,
+        )
+        self.assertFalse(client.is_connected)
+        self.assertIsNone(client.control_conn)
+
+        with client as active_client:
+            self.assertIs(active_client, client)
+            self.assertTrue(active_client.is_connected)
+            self.assertIsNotNone(active_client.control_conn)
+            self.assertEqual(active_client.host, "127.0.0.1")
+            self.assertEqual(active_client.control_port, self.server.control_port)
+            self.assertEqual(active_client.data_port, self.server.data_port)
+
+        self.assertFalse(client.is_connected)
+        self.assertIsNone(client.control_conn)
+
+    def test_client_register_and_login_flow(self) -> None:
+        """Valida cadastro de conta, login explícito e persistência de sessão."""
+        with HomelabClient(
+            host="127.0.0.1",
+            control_port=self.server.control_port,
+            data_port=self.server.data_port,
+            session_path=self.session_path,
+        ) as client:
+            # 1. Login sem cadastro prévio deve falhar
+            ok, msg = client.login("novo_usuario", "senha123")
+            self.assertFalse(ok)
+            self.assertIn("não encontrado", msg)
+
+            # 2. Cadastro do novo usuário
+            ok_reg, msg_reg = client.register("novo_usuario", "senha123")
+            self.assertTrue(ok_reg, msg_reg)
+            self.assertIn("sucesso", msg_reg)
+            self.assertEqual(client.username, "novo_usuario")
+            self.assertIsNotNone(client.session)
+            self.assertTrue(client.session.is_valid())
+            self.assertTrue(self.session_path.is_file())
+
+        # 3. Novo cliente autentica usando os dados cadastrados
+        with HomelabClient(
+            host="127.0.0.1",
+            control_port=self.server.control_port,
+            data_port=self.server.data_port,
+            session_path=self.session_path,
+        ) as client2:
+            # Senha errada deve falhar
+            ok_bad, msg_bad = client2.login("novo_usuario", "senha_incorreta")
+            self.assertFalse(ok_bad)
+            self.assertIn("Senha incorreta", msg_bad)
+
+            # Senha correta
+            ok_login, msg_login = client2.login("novo_usuario", "senha123")
+            self.assertTrue(ok_login, msg_login)
+            self.assertEqual(client2.username, "novo_usuario")
+
+    def test_client_send_message_dispatch(self) -> None:
+        """Valida despacho de mensagens autenticadas através do HomelabClient."""
+        with HomelabClient(
+            host="127.0.0.1",
+            control_port=self.server.control_port,
+            data_port=self.server.data_port,
+            session_path=self.session_path,
+        ) as client:
+            # Tentativa de envio sem login prévio
+            ok_unauth, msg_unauth = client.send_message("Mensagem sem auth")
+            self.assertFalse(ok_unauth)
+            self.assertIn("não autenticado", msg_unauth)
+
+            # Cadastro e login
+            client.register("autor_msg", "chave_secreta")
+
+            # Envio com sucesso
+            ok_send, msg_send = client.send_message("Mensagem enviada via HomelabClient OO!")
+            self.assertTrue(ok_send, msg_send)
+            self.assertIn("sucesso", msg_send.lower())
+
+            # Valida gravação no log do servidor
+            self.assertTrue(self.log_path.is_file())
+            server_logs = self.log_path.read_text(encoding="utf-8")
+            self.assertIn("autor_msg@", server_logs)
+            self.assertIn("Mensagem enviada via HomelabClient OO!", server_logs)
+
+    def test_client_upload_file(self) -> None:
+        """Valida upload de arquivo em chunks através do HomelabClient."""
+        with HomelabClient(
+            host="127.0.0.1",
+            control_port=self.server.control_port,
+            data_port=self.server.data_port,
+            session_path=self.session_path,
+        ) as client:
+            client.register("uploader_client", "segredo_upload")
+
+            # Cria arquivo de teste
+            test_file = Path(self.temp_dir) / "documento_teste.txt"
+            test_content = b"Conteudo de teste para upload em chunks via HomelabClient OO!"
+            test_file.write_bytes(test_content)
+
+            ok, msg = client.upload_file(test_file)
+            self.assertTrue(ok, msg)
+            self.assertIn("sucesso", msg.lower())
+
+            # Verifica arquivo salvo no servidor
+            user_uploads = list((self.uploads_dir / "uploader_client").glob("*documento_teste.txt"))
+            self.assertEqual(len(user_uploads), 1)
+            self.assertEqual(user_uploads[0].read_bytes(), test_content)
+
+
 if __name__ == "__main__":
     unittest.main()
+
