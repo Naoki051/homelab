@@ -158,7 +158,18 @@ class ControlConnection:
                 self.session_key = bytes.fromhex(new_key_hex)
 
             return resp
-        except Exception as e:
+        except (
+            ConnectionResetError,
+            BrokenPipeError,
+            TimeoutError,
+            socket.timeout,
+            OSError,
+            ProtocolError,
+            HMACVerificationError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as e:
+            logger.error("Erro na conexão persistente de controle: %s", e)
             print(f"\n[!] Erro na conexão persistente de controle: {e}", file=sys.stderr)
             self.close()
             return None
@@ -243,33 +254,50 @@ class ControlConnection:
         target_data_port = data_port or int(resp.payload.get("data_port", DEFAULT_DATA_PORT))
         total_chunks = int(resp.payload.get("total_chunks", 1))
 
+        logger.info(
+            "Iniciando upload de '%s' (%d bytes em %d chunks de até 64KB, ticket=%s) via Canal de Dados %s:%s...",
+            path.name,
+            file_size,
+            total_chunks,
+            mask_secret(ticket_hex),
+            self.host,
+            target_data_port,
+        )
         print(
             f"[*] Iniciando upload de '{path.name}' ({file_size} bytes em {total_chunks} chunks de até 64KB) "
             f"via Canal de Dados {self.host}:{target_data_port}..."
         )
 
-        data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        data_sock.settimeout(self.timeout)
-        try:
-            data_sock.connect((self.host, target_data_port))
-            for chunk in MediaChunk.slice_file(path, ticket=ticket_hex, chunk_size=CHUNK_SIZE):
-                chunk.send(data_sock, hmac_key=self.session_key)
+        with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as data_sock:
+            data_sock.settimeout(self.timeout)
+            try:
+                data_sock.connect((self.host, target_data_port))
+                for chunk in MediaChunk.slice_file(path, ticket=ticket_hex, chunk_size=CHUNK_SIZE):
+                    chunk.send(data_sock, hmac_key=self.session_key)
 
-            final_resp = Message.recv_framed(data_sock, hmac_key=self.session_key)
-            if not final_resp:
-                return False, "Canal de dados fechou sem enviar confirmação final."
+                final_resp = Message.recv_framed(data_sock, hmac_key=self.session_key)
+                if not final_resp:
+                    return False, "Canal de dados fechou sem enviar confirmação final."
 
-            ok = final_resp.payload.get("status") == Message.STATUS_OK
-            msg = final_resp.payload.get("message", "")
-            if ok:
-                print(f"[✓] {msg}")
-            else:
-                print(f"[!] Erro no upload: {msg}", file=sys.stderr)
-            return ok, msg
-        except OSError as e:
-            return False, f"Erro de rede no Canal de Dados: {e}"
-        finally:
-            data_sock.close()
+                ok = final_resp.payload.get("status") == Message.STATUS_OK
+                msg = final_resp.payload.get("message", "")
+                if ok:
+                    print(f"[✓] {msg}")
+                else:
+                    logger.error("Erro retornado pelo servidor no upload: %s", msg)
+                    print(f"[!] Erro no upload: {msg}", file=sys.stderr)
+                return ok, msg
+            except (
+                ConnectionResetError,
+                BrokenPipeError,
+                TimeoutError,
+                socket.timeout,
+                OSError,
+                ProtocolError,
+                HMACVerificationError,
+            ) as e:
+                logger.error("Erro de rede no Canal de Dados ao enviar '%s': %s", path.name, e)
+                return False, f"Erro de rede no Canal de Dados: {e}"
 
     def close(self) -> None:
         if self.sock is not None:
@@ -277,11 +305,20 @@ class ControlConnection:
                 logout_msg = Message(action=Message.ACTION_LOGOUT, payload={})
                 logout_msg.send_framed(self.sock, hmac_key=self.session_key)
                 Message.recv_framed(self.sock, hmac_key=self.session_key)
-            except Exception:
+            except (
+                ConnectionResetError,
+                BrokenPipeError,
+                TimeoutError,
+                socket.timeout,
+                OSError,
+                ProtocolError,
+                HMACVerificationError,
+                ValueError,
+            ):
                 pass
             try:
                 self.sock.close()
-            except Exception:
+            except OSError:
                 pass
             self.sock = None
             self.session_key = DEFAULT_HANDSHAKE_KEY
@@ -523,50 +560,47 @@ def send_network_message(
     hmac_key: bytes = DEFAULT_HANDSHAKE_KEY,
 ) -> Optional[Message]:
     """Envia uma mensagem pontual (compatível com servidores legados ou modo framed)."""
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.settimeout(TIMEOUT_SECONDS)
-
-    try:
-        client_socket.connect((host, port))
-        if use_framing:
-            message.send_framed(client_socket, hmac_key=hmac_key)
-            return Message.recv_framed(client_socket, hmac_key=hmac_key)
-
-        payload_bytes = message.to_bytes()
-        client_socket.sendall(payload_bytes)
-
-        raw_response = client_socket.recv(BUFFER_SIZE)
-        if not raw_response:
-            return None
-
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as client_socket:
+        client_socket.settimeout(TIMEOUT_SECONDS)
         try:
-            if len(raw_response) >= 40 and raw_response[:2] == CONTROL_MAGIC:
-                return Message.from_frame(raw_response, hmac_key=hmac_key)
-            return Message.from_bytes(raw_response)
-        except Exception:
-            return Message.response(
-                Message.STATUS_OK,
-                raw_response.decode("utf-8", errors="replace").strip(),
-            )
+            client_socket.connect((host, port))
+            if use_framing:
+                message.send_framed(client_socket, hmac_key=hmac_key)
+                return Message.recv_framed(client_socket, hmac_key=hmac_key)
 
-    except ConnectionRefusedError:
-        print(
-            f"\n[!] Erro: Conexão recusada em {host}:{port}. "
-            "Certifique-se de que o servidor está rodando.",
-            file=sys.stderr,
-        )
-        return None
-    except socket.timeout:
-        print(
-            f"\n[!] Erro: Tempo de espera esgotado ({TIMEOUT_SECONDS}s) aguardando {host}:{port}.",
-            file=sys.stderr,
-        )
-        return None
-    except OSError as e:
-        print(f"\n[!] Erro de rede: {e}", file=sys.stderr)
-        return None
-    finally:
-        client_socket.close()
+            payload_bytes = message.to_bytes()
+            client_socket.sendall(payload_bytes)
+
+            raw_response = client_socket.recv(BUFFER_SIZE)
+            if not raw_response:
+                return None
+
+            try:
+                if len(raw_response) >= 40 and raw_response[:2] == CONTROL_MAGIC:
+                    return Message.from_frame(raw_response, hmac_key=hmac_key)
+                return Message.from_bytes(raw_response)
+            except (ProtocolError, HMACVerificationError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+                return Message.response(
+                    Message.STATUS_OK,
+                    raw_response.decode("utf-8", errors="replace").strip(),
+                )
+
+        except ConnectionRefusedError:
+            print(
+                f"\n[!] Erro: Conexão recusada em {host}:{port}. "
+                "Certifique-se de que o servidor está rodando.",
+                file=sys.stderr,
+            )
+            return None
+        except (socket.timeout, TimeoutError):
+            print(
+                f"\n[!] Erro: Tempo de espera esgotado ({TIMEOUT_SECONDS}s) aguardando {host}:{port}.",
+                file=sys.stderr,
+            )
+            return None
+        except OSError as e:
+            print(f"\n[!] Erro de rede: {e}", file=sys.stderr)
+            return None
 
 
 def do_login_request(
