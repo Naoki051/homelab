@@ -12,7 +12,7 @@ import hmac
 from pathlib import Path
 import secrets
 import sqlite3
-from typing import Generator, Optional, Tuple, Union
+from typing import Any, Dict, Generator, Optional, Tuple, Union
 
 
 def hash_password(secret: str) -> str:
@@ -56,7 +56,7 @@ class Client:
         last_seen: Optional[str] = None,
         created_at: Optional[str] = None,
         updated_at: Optional[str] = None,
-    ):
+    ) -> None:
         self.id = id
         self.username = username
         self.password_hash = password_hash
@@ -65,7 +65,7 @@ class Client:
         self.created_at = created_at
         self.updated_at = updated_at
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Retorna os dados públicos do cliente (sem expor hash de senha)."""
         return {
             "id": self.id,
@@ -82,7 +82,7 @@ class ClientRepository:
 
     DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "homelab.db"
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None) -> None:
         self.db_path = db_path or self.DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.init_schema()

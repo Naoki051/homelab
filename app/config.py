@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import sys
-from typing import Any, Optional, Union
+from typing import Any, List, Optional, Union
 
 # Tenta carregar python-dotenv conforme declarado no requirements.txt
 try:
@@ -31,7 +31,7 @@ class ConfigValidationError(ValueError):
 
 def _resolve_env_file(
     explicit_path: Optional[Union[Path, str]],
-    default_candidates: list[str],
+    default_candidates: List[str],
 ) -> Optional[Path]:
     """
     Determina o arquivo de ambiente a ser carregado.

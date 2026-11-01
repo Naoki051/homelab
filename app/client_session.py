@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import Optional
+from typing import Any, Dict, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -34,7 +34,7 @@ class Session:
         last_username: str,
         last_password: str,
         expire_date_time: str,
-    ):
+    ) -> None:
         self.last_username = last_username
         self.last_password = last_password
         self.expire_date_time = expire_date_time
@@ -69,7 +69,7 @@ class Session:
         except (ValueError, TypeError):
             return "desconhecido"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Serializa os dados da sessão no dicionário exigido."""
         return {
             "last_username": self.last_username,
