@@ -5,16 +5,31 @@ eliminando a necessidade de capturas e lançamentos genéricos de `Exception`,
 além de fornecer utilitários para mascaramento de credenciais e dados sensíveis.
 """
 
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
+
+__all__: List[str] = [
+    "HomelabError",
+    "ProtocolError",
+    "HMACVerificationError",
+    "AuthenticationError",
+    "SessionExpiredError",
+    "StorageError",
+    "NetworkTimeoutError",
+    "mask_secret",
+    "mask_password",
+]
 
 
 class HomelabError(Exception):
     """Exceção base para todas as falhas de domínio do ecossistema Homelab."""
 
+    message: str
+    context: Dict[str, Any]
+
     def __init__(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(message)
-        self.message: str = message
-        self.context: Dict[str, Any] = context or {}
+        self.message = message
+        self.context = context or {}
 
     def __str__(self) -> str:
         if self.context:

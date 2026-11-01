@@ -8,7 +8,14 @@ diretrizes de conformidade e DEBT-04, aplicando o formato canônico:
 import logging
 from pathlib import Path
 import sys
-from typing import Optional, Union
+from typing import List, Optional, Union
+
+__all__: List[str] = [
+    "HOMELAB_LOG_FORMAT",
+    "HOMELAB_DATE_FORMAT",
+    "setup_logging",
+    "get_logger",
+]
 
 HOMELAB_LOG_FORMAT: str = "[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s"
 HOMELAB_DATE_FORMAT: str = "%Y-%m-%d %H:%M:%S"
