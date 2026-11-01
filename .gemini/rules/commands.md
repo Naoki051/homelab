@@ -110,13 +110,61 @@ python3 -m unittest tests/test_auth_and_session.py -v
 
 # Testes do protocolo duplo (Controle 40B, HMAC dinâmico e Chunks de 64KB)
 python3 -m unittest tests/test_dual_protocol_and_chunks.py -v
+
+# Testes de padrões de código, exceções de domínio e conformidade
+python3 -m unittest tests/test_code_standards.py -v
+```
+
+### 3.3. Ciclo de Desenvolvimento TDD (Red -> Green -> Refactor)
+```bash
+# 1. Red: Executar teste recém-criado para confirmar falha esperada
+python3 -m unittest tests/test_novo_recurso.py -v
+
+# 2. Green: Implementar o código mínimo e rodar novamente até passar
+python3 -m unittest tests/test_novo_recurso.py -v
+
+# 3. Refactor: Validar não-regressão rodando a suíte completa
+python3 -m unittest discover -s tests -v
 ```
 
 ---
 
-## 4. Inspeção de Dados, Banco SQLite e Logs
+## 4. Qualidade de Código e Linting (`flake8`)
 
-### 4.1. Banco de Dados SQLite (`app/data/homelab.db`)
+O projeto utiliza o arquivo canônico `.flake8` na raiz do repositório como guia estrito de formatação PEP 8 e complexidade ciclomática.
+
+### 4.1. Execução via Script Auxiliar Automatizado
+```bash
+# Script com autoverificação de ambiente e execução conforme .flake8:
+./scripts/run-lint.sh
+
+# Passando parâmetros ou arquivos específicos:
+./scripts/run-lint.sh app/ tests/
+```
+
+### 4.2. Execução Direta do Flake8 (Terminal ou venv)
+```bash
+# Executar verificação completa em todos os arquivos de código:
+flake8 app/ tests/
+
+# Checar apenas o diretório de aplicação:
+flake8 app/
+
+# Checar complexidade ciclomática estrita (max-complexity = 12):
+flake8 --select=C901 app/
+```
+
+### 4.3. Instalação do Flake8 no Host ou Ambiente Virtual
+```bash
+# Instalação direta no venv do projeto:
+python3 -m pip install flake8
+```
+
+---
+
+## 5. Inspeção de Dados, Banco SQLite e Logs
+
+### 5.1. Banco de Dados SQLite (`app/data/homelab.db`)
 ```bash
 # Inspecionar contas de clientes cadastradas
 sqlite3 app/data/homelab.db "SELECT id, username, status, datetime(created_at, 'unixepoch', 'localtime') FROM clients;"
@@ -128,13 +176,13 @@ sqlite3 app/data/homelab.db "SELECT id, client_id, message, datetime(created_at,
 sqlite3 app/data/homelab.db "PRAGMA integrity_check;"
 ```
 
-### 4.2. Sessão Local do Cliente (`app/data/client_session.json`)
+### 5.2. Sessão Local do Cliente (`app/data/client_session.json`)
 ```bash
 # Visualizar conteúdo da sessão salva (JSON formatado)
 python3 -m json.tool app/data/client_session.json 2>/dev/null || cat app/data/client_session.json
 ```
 
-### 4.3. Logs do Servidor e Arquivos de Upload
+### 5.3. Logs do Servidor e Arquivos de Upload
 ```bash
 # Acompanhar o log de mensagens em tempo real
 tail -f app/logs/server_messages.log
@@ -145,9 +193,9 @@ ls -lh app/data/uploads/
 
 ---
 
-## 5. Manutenção do Host (Debian 11 / UserLAnd / Termux)
+## 6. Manutenção do Host (Debian 11 / UserLAnd / Termux)
 
-### 5.1. Acesso SSH ao Host
+### 6.1. Acesso SSH ao Host
 ```bash
 # Acesso ao Debian 11 UserLAnd no Redmi Note 9S (porta 2022)
 ssh -p 2022 debian@192.168.0.246
@@ -156,7 +204,7 @@ ssh -p 2022 debian@192.168.0.246
 ssh -p 8022 -i ~/.ssh/id_ed25519 192.168.0.246
 ```
 
-### 5.2. Gerenciamento de Serviços no Debian UserLAnd
+### 6.2. Gerenciamento de Serviços no Debian UserLAnd
 ```bash
 # Iniciar o serviço SSH dentro do UserLAnd
 sudo service ssh start
@@ -174,7 +222,7 @@ free -m
 df -h
 ```
 
-### 5.3. Otimizações de Rede e Processos no Android
+### 6.3. Otimizações de Rede e Processos no Android
 ```bash
 # Elevar limite de descritores de arquivos na sessão
 ulimit -n 4096
@@ -186,7 +234,7 @@ termux-wake-lock
 termux-battery-status
 ```
 
-### 5.4. Execução Contínua em Background com PM2
+### 6.4. Execução Contínua em Background com PM2
 ```bash
 # Iniciar o servidor Homelab gerenciado pelo PM2
 pm2 start app/server.py --name "homelab-server" --interpreter python3
@@ -203,9 +251,9 @@ pm2 save
 
 ---
 
-## 6. Governança Git, Worktrees e Commits Atômicos
+## 7. Governança Git, Worktrees e Commits Atômicos
 
-### 6.1. Gestão de Worktrees Isoladas
+### 7.1. Gestão de Worktrees Isoladas
 ```bash
 # Listar worktrees ativas
 git worktree list
@@ -217,13 +265,13 @@ git worktree add ../homelab-<nome-da-branch> -b <nome-da-branch>
 git worktree remove ../homelab-<nome-da-branch>
 ```
 
-### 6.2. Proteção da Branch `main` e Verificação
+### 7.2. Proteção da Branch `main` e Verificação
 ```bash
 # NUNCA commitar na branch main! Sempre checar branch ativa antes de commitar:
 git branch --show-current
 ```
 
-### 6.3. Padrão de Commits Atômicos (Conventional Commits)
+### 7.3. Padrão de Commits Atômicos (Conventional Commits)
 ```bash
 # Formato: <tipo>(<escopo>): <descrição em minúsculas>
 git add <arquivos-estritos-da-action>

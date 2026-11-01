@@ -8,6 +8,7 @@ Este projeto utiliza um sistema integrado de governança, guard rails e navegaç
 - [Ciclo de Vida de Testes e Comandos de Infraestrutura](.gemini/rules/testing-and-infra-lifecycle.md)
 - [Ciclo de Propagação e Rastreamento de Documentação](.gemini/rules/doc-propagation-lifecycle.md)
 - [Catálogo Canônico de Comandos Úteis e Operações](.gemini/rules/commands.md)
+- [Padrões de Código, TDD e Workflow de Execução](.gemini/rules/code-standards-and-workflow.md)
 - [Roteador Central de Documentação](docs/INDEX.md)
 
 ---
@@ -50,3 +51,10 @@ Este projeto utiliza um sistema integrado de governança, guard rails e navegaç
 
 7. **Execução Padronizada de Comandos:**
    - Utilizar o [Catálogo Canônico de Comandos Úteis](.gemini/rules/commands.md) para execução de rotinas operacionais, testes, manutenção e daemons.
+
+8. **Padrões de Código, TDD e Workflow de Execução:**
+   - Adoção mandatória do ciclo TDD via `unittest` nativo (Red $\rightarrow$ Green $\rightarrow$ Refactor) e linting via `flake8`.
+   - Arquitetura cliente-servidor orientada a objetos com separação estrita de responsabilidades (SRP).
+   - Proibição absoluta de exceptions genéricas (`except Exception:`) e mensagens sem contexto em favor da hierarquia oficial em [`app/exceptions.py`](app/exceptions.py).
+   - Mascaramento e sanitização obrigatória de dados sensíveis (senhas, hashes e chaves de sessão HMAC) em logs e telas.
+   - Detalhado em: [`.gemini/rules/code-standards-and-workflow.md`](.gemini/rules/code-standards-and-workflow.md) e inventário de débitos em [`docs/debts.md`](docs/debts.md).

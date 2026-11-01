@@ -23,6 +23,8 @@ Consulte a tabela abaixo para ir diretamente ao documento de especificação, ao
 | **Boot Automático, Cron & Battery Guard** | [`docs/infra/05-automacao-boot-e-manutencao.md`](infra/05-automacao-boot-e-manutencao.md) | [`scripts/battery-guard.sh`](../scripts/battery-guard.sh) | — |
 | **Limites Físicos do Host (Redmi Note 9S)**| [`docs/infra/06-capacidade-e-limites-fisicos-do-host.md`](infra/06-capacidade-e-limites-fisicos-do-host.md) | Arquitetura Dual-Protocol | — |
 | **Diagnóstico de Infra & Script Fail-Fast** | [`docs/infra/07-verificacao-e-saude-da-infraestrutura.md`](infra/07-verificacao-e-saude-da-infraestrutura.md) | [`scripts/check-infra.sh`](../scripts/check-infra.sh) | [`tests/test_check_infra.py`](../tests/test_check_infra.py) |
+| **Padrões de Código, TDD e Flake8** | [`.gemini/rules/code-standards-and-workflow.md`](../.gemini/rules/code-standards-and-workflow.md) | [`.flake8`](../.flake8), [`scripts/run-lint.sh`](../scripts/run-lint.sh) | [`tests/test_code_standards.py`](../tests/test_code_standards.py) |
+| **Inventário de Débitos Técnicos & OO** | [`docs/debts.md`](debts.md) | Roadmap de refatoração | Todas as suítes |
 
 ---
 
@@ -72,3 +74,7 @@ graph TD
 3. [**003. Autenticação de Clientes, Classes OO e Quick Login**](app/003-client-auth-and-storage.md): Persistência no SQLite (`homelab.db`), classes OO `Client`, `Session` e `Message`, credenciais com PBKDF2 e Quick Login NoSQL.
 4. [**004. Arquitetura Dual-Protocol (Controle Persistente e Chunks de Mídia)**](app/004-protocolos-controle-e-dados.md): Framing binário de 40B na porta 9000, streaming de chunks de 64KB na porta 9001 e assinatura HMAC-SHA256 com chave dinâmica.
 5. [**005. Gerenciamento de Configurações, Variáveis de Ambiente e Arquivos .env**](app/005-gerenciamento-de-configuracoes-e-env.md): Módulo central `app/config.py`, separação `server.env` / `client.env`, precedência em camadas e fail-fast.
+
+### C. Governança de Engenharia, Qualidade e Débitos Técnicos
+1. [**Inventário de Débitos Técnicos e Roadmap de Refatoração**](debts.md): Mapeamento das 5 áreas de dívida técnica (Arquitetura OO, remoção de exceptions genéricas, context managers, logging vs print e type hints).
+2. [**Padrões de Código, TDD e Workflow de Execução**](../.gemini/rules/code-standards-and-workflow.md): Regra normativa para ciclo Red-Green-Refactor, configuração do Flake8, exceptions de domínio e mascaramento de segredos.
