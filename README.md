@@ -79,10 +79,126 @@ A documentação está organizada entre **Infraestrutura do Homelab** e **Aplica
 * [**003. Autenticação de Clientes, Classes OO e Quick Login**](docs/app/003-client-auth-and-storage.md): Especificação da tabela `clients` em SQLite, classes `Client`, `Session` e `Message`, e documento NoSQL para Quick Login.
 * [**004. Protocolos de Controle e Dados (Framing Persistente e Chunks)**](docs/app/004-protocolos-controle-e-dados.md): Framing binário de 40B, chave de sessão dinâmica HMAC-SHA256 e upload de arquivos em chunks indexados de 64KB.
 * [**005. Gerenciamento de Configurações e Variáveis de Ambiente**](docs/app/005-gerenciamento-de-configuracoes-e-env.md): Suporte a `server.env`, `client.env`, fallback para `os.environ`, precedência em camadas e suporte a fail fast.
+* [**006. Guia Rápido: Como Rodar e Usar o Servidor e o Cliente**](docs/app/006-guia-rapido-como-rodar.md): Guia direto de execução passo a passo (`python3 -m app.server` e `python3 -m app.client`), flags CLI, Quick Login, `/upload` e inspeção de logs/SQLite.
 
 ---
 
-## ⚡ Quickstart (Executando os Scripts)
+## 🚀 Como Usar e Executar (Servidor e Cliente)
+
+Após a refatoração orientada a objetos, o **Servidor** ([`app/server/`](app/server/)) e o **Cliente** ([`app/client/`](app/client/)) são pacotes Python modulares equipados com `__main__.py`, permitindo execução direta tanto via módulo (`python3 -m app.server` / `python3 -m app.client`) quanto via caminho do diretório (`python3 app/server` / `python3 app/client`).
+
+### 1. Preparação dos Arquivos de Ambiente (`.env`)
+Antes de iniciar, crie os arquivos locais de configuração a partir dos templates oficiais em [`envs/`](envs/):
+
+```bash
+cp envs/server.env.sample envs/server.env
+cp envs/client.env.sample envs/client.env
+
+# Validar configurações (Fail-Fast)
+./scripts/check-infra.sh --mode server --env-only
+./scripts/check-infra.sh --mode client --env-only
+```
+
+---
+
+### 2. Como Rodar o Servidor (`app/server/`)
+
+O servidor inicia simultaneamente dois canais TCP:
+- **Canal de Controle (Porta `9000`):** Conexão persistente com framing binário de 40B, autenticação PBKDF2 e emissão de chave de sessão dinâmica HMAC-SHA256.
+- **Canal de Dados/Mídia (Porta `9001`):** Recepção de arquivos fatiados em chunks indexados de 64KB (cabeçalho de 62B) com gravação direta em disco e validação SHA-256.
+
+```bash
+# Iniciar com as configurações padrão de envs/server.env (escutando em 0.0.0.0:9000 e :9001)
+python3 -m app.server
+# Ou: python3 app/server
+
+# Iniciar apenas em loopback (para desenvolvimento/testes locais)
+python3 -m app.server --host 127.0.0.1
+
+# Sobrescrever portas, banco SQLite, log ou diretório de uploads via CLI
+python3 -m app.server --host 0.0.0.0 --port 9000 --data-port 9001 \
+  --db app/data/homelab.db \
+  --log app/logs/server_messages.log \
+  --uploads-dir app/data/uploads
+
+# Iniciar com um arquivo .env específico
+python3 -m app.server --env-file envs/server.env
+```
+
+#### Executando em Produção 24/7 com PM2 (Termux / Debian UserLAnd):
+```bash
+pm2 start app/server --name "homelab-server" --interpreter python3
+pm2 status
+pm2 logs homelab-server
+pm2 save
+```
+
+---
+
+### 3. Como Rodar e Usar o Cliente (`app/client/`)
+
+#### A. Modo Interativo (Menu de Acesso, Quick Login e Chat/Upload)
+Execute o cliente sem argumentos de ação para abrir a interface interativa de terminal (`ClientTerminalUI`):
+
+```bash
+# Conectar usando o destino configurado em envs/client.env
+python3 -m app.client
+# Ou: python3 app/client
+
+# Apontar para o IP do smartphone na rede local (LAN ou Tailscale)
+python3 -m app.client --host 192.168.0.246 --port 9000 --data-port 9001
+```
+
+**Fluxo no Terminal Interativo:**
+1. **Menu de Acesso:**
+   - Escolha `2. Register` no primeiro acesso para criar sua conta (mínimo 3 caracteres). O cliente ativa o **Auto-Login** e salva a sessão local em `app/data/client_session.json` (`chmod 600`, válida por 7 dias).
+   - Escolha `1. Login` nos próximos acessos: se houver sessão válida, o cliente oferece **Quick Login** (`[S/n]`) sem precisar redigitar a senha.
+2. **Prompt Conectado (`[usuario] >`):**
+   - **Enviar mensagem de texto:** Digite qualquer texto e pressione `Enter`.
+   - **Enviar arquivo/mídia em chunks de 64KB:** Digite `/upload <caminho_do_arquivo>` (ex: `/upload app/data/foto.jpg`).
+   - **Encerrar sessão:** Digite `sair` (ou `exit` / `quit` / `Ctrl+C`), realizando o logout limpo e marcando presença como `offline` no servidor.
+
+#### B. Modo Direto via Linha de Comando (CLI One-Shot)
+Você também pode enviar uma mensagem ou fazer upload de um arquivo diretamente por flags após a autenticação:
+
+```bash
+# Enviar uma mensagem de texto e encerrar
+python3 -m app.client --host 127.0.0.1 -m "Olá Homelab via CLI!"
+
+# Fazer upload de um arquivo em chunks de 64KB e encerrar
+python3 -m app.client --host 127.0.0.1 -u caminho/para/arquivo.png
+
+# Enviar mensagem + fazer upload na mesma sessão
+python3 -m app.client --host 127.0.0.1 -m "Enviando relatório" -u relatorio.pdf
+```
+
+---
+
+### 4. Uso Programático (API Orientada a Objetos em Python)
+
+Como os pacotes [`app.client`](app/client/__init__.py) e [`app.server`](app/server/__init__.py) expõem as classes `HomelabClient` (`Client`) e `HomelabServer` (`Server`) com suporte a *Context Manager* (`with`), você pode integrá-los diretamente em scripts ou testes:
+
+```python
+from app.client import HomelabClient
+from app.server import HomelabServer
+
+# Iniciar servidor em background e conectar cliente via Context Manager determinístico
+with HomelabServer(host="127.0.0.1", control_port=9000, data_port=9001) as server:
+    with HomelabClient(host="127.0.0.1", control_port=9000, data_port=9001) as client:
+        # 1. Cadastrar ou fazer login
+        ok, msg = client.register("naoki", "MinhaSenhaSegura123")
+        # Ou: ok, msg = client.login("naoki", "MinhaSenhaSegura123")
+
+        # 2. Enviar mensagem de texto no Canal de Controle (:9000)
+        ok, resp = client.send_message("Mensagem via API OO!")
+
+        # 3. Enviar arquivo fatiado em Chunks de 64KB no Canal de Dados (:9001)
+        ok, up_resp = client.upload_file("app/data/foto.jpg")
+```
+
+---
+
+## ⚡ Quickstart de Infraestrutura (Scripts do Aparelho)
 
 Se você já instalou o Termux pelo F-Droid e tem acesso ao terminal no celular, você pode clonar este repositório ou copiar a pasta de scripts para o aparelho:
 
@@ -141,7 +257,8 @@ homelab/
 │   │   ├── 002-stack-definicao-e-arquitetura.md
 │   │   ├── 003-client-auth-and-storage.md
 │   │   ├── 004-protocolos-controle-e-dados.md
-│   │   └── 005-gerenciamento-de-configuracoes-e-env.md
+│   │   ├── 005-gerenciamento-de-configuracoes-e-env.md
+│   │   └── 006-guia-rapido-como-rodar.md
 │   └── infra/
 │       ├── 01-preparacao-miui-android.md
 │       ├── 02-rede-ssh-e-acesso-remoto.md
@@ -156,7 +273,8 @@ homelab/
 │   ├── test_check_infra.py
 │   ├── test_code_standards.py
 │   ├── test_config.py
-│   └── test_dual_protocol_and_chunks.py
+│   ├── test_dual_protocol_and_chunks.py
+│   └── test_e2e_opaque_box.py
 └── scripts/
     ├── 01-bootstrap-termux.sh
     ├── 02-setup-dev-stack.sh

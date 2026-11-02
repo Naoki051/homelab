@@ -29,13 +29,13 @@ Como o servidor Homelab roda no smartphone **Xiaomi Redmi Note 9S** (via Termux)
 flowchart LR
     subgraph HostServer["Host Servidor (Xiaomi Redmi Note 9S)"]
         ServerEnv["envs/server.env / envs/server.env.sample"]
-        ServerApp["app/server.py"]
+        ServerApp["app/server/ (python3 -m app.server)"]
         ServerEnv --> ServerApp
     end
 
     subgraph HostClient["Host Cliente (Mac / Workstation)"]
         ClientEnv["envs/client.env / envs/client.env.sample"]
-        ClientApp["app/client.py"]
+        ClientApp["app/client/ (python3 -m app.client)"]
         ClientEnv --> ClientApp
     end
 
@@ -109,24 +109,26 @@ except ConfigValidationError as e:
 
 ### 6.1. Inicialização Padrão (utiliza automaticamente `envs/server.env` e `envs/client.env`)
 ```bash
-# Servidor
-python3 app/server.py
+# Servidor (módulo ou diretório de pacote)
+python3 -m app.server
+# Ou: python3 app/server
 
-# Cliente
-python3 app/client.py
+# Cliente (módulo ou diretório de pacote)
+python3 -m app.client
+# Ou: python3 app/client
 ```
 
 ### 6.2. Usando um arquivo de ambiente customizado
 ```bash
 # Servidor em ambiente customizado
-python3 app/server.py --env-file envs/server.homolog.env
+python3 -m app.server --env-file envs/server.homolog.env
 
 # Cliente apontando para arquivo customizado
-python3 app/client.py --env-file envs/client.local.env
+python3 -m app.client --env-file envs/client.local.env
 ```
 
 ### 6.3. Sobrescrita pontual via CLI
 ```bash
 # Servidor escutando em porta diferente sem alterar o arquivo .env
-python3 app/server.py --port 9500 --data-port 9501
+python3 -m app.server --port 9500 --data-port 9501
 ```

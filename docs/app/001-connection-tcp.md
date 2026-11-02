@@ -155,17 +155,18 @@ Antes de rodar clientes customizados, validar a escuta da porta diretamente:
 ### Nível 2: Execução do Servidor com Registro em Log
 1. No celular:
    ```bash
-   python3 app/server.py
+   python3 -m app.server
+   # Ou: python3 app/server
    ```
 2. Em outro terminal (ou via SSH no celular):
    ```bash
    tail -f app/logs/server_messages.log
    ```
 
-### Nível 3: Envio pelo Script Cliente
+### Nível 3: Envio pelo Pacote Cliente
 1. No Mac:
    ```bash
-   python3 app/client.py --host 192.168.1.X --port 9000 --message "Homelab TCP ativo com sucesso!"
+   python3 -m app.client --host 192.168.1.X --port 9000 --message "Homelab TCP ativo com sucesso!"
    ```
 2. Confirmar que a mensagem foi persistida no arquivo de log do celular com data, hora e IP de origem.
 

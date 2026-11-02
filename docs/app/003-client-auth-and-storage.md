@@ -149,7 +149,7 @@ classDiagram
 5. Inicia o prompt de transmissão de mensagens.
 
 ### Cenário 2: Próximos Acessos (Quick Login)
-1. Usuário executa `python3 app/client.py`.
+1. Usuário executa `python3 -m app.client` (ou `python3 app/client`).
 2. O cliente detecta o arquivo `client_session.json` com data válida:
    ```text
    [?] Quick login disponível para 'naoki' (6d 23h restantes). Deseja aceitar? [S/n]:
@@ -166,12 +166,14 @@ classDiagram
 
 ### Iniciar o Servidor:
 ```bash
-python3 app/server.py
+python3 -m app.server
+# Ou: python3 app/server
 ```
 
 ### Iniciar o Cliente:
 ```bash
-python3 app/client.py
+python3 -m app.client
+# Ou: python3 app/client
 ```
 
 ### Executar os Testes Automatizados:
