@@ -51,40 +51,40 @@ cp envs/.env.sample envs/.env
 
 ## 2. Execução da Aplicação (Servidor e Cliente Dual-Protocol)
 
-### 2.1. Execução do Servidor (`app/server.py`)
+### 2.1. Execução do Servidor (`app/server` / `app.server`)
 ```bash
-# Iniciar com configurações padrão de envs/server.env
-python3 app/server.py
+# Iniciar como módulo padrão via Python (recomendado)
+python3 -m app.server
+
+# Ou iniciar via diretório de pacote
+python3 app/server
 
 # Iniciar especificando arquivo de ambiente customizado
-python3 app/server.py --env-file envs/server.env
+python3 -m app.server --env-file envs/server.env
 
 # Iniciar com sobrescrita explícita de porta de controle e dados via CLI
-python3 app/server.py --control-port 9000 --data-port 9001
+python3 -m app.server --port 9000 --data-port 9001
 
 # Iniciar escutando apenas em loopback para testes locais
-python3 app/server.py --host 127.0.0.1
+python3 -m app.server --host 127.0.0.1
 ```
 
-### 2.2. Execução do Cliente (`app/client.py`)
+### 2.2. Execução do Cliente (`app/client` / `app.client`)
 ```bash
-# Executar o cliente em modo interativo (menu CLI)
-python3 app/client.py
+# Executar o cliente em modo interativo (menu CLI com Quick Login automático)
+python3 -m app.client
+
+# Ou executar via diretório de pacote
+python3 app/client
 
 # Apontar diretamente para IP do smartphone na rede LAN
-python3 app/client.py --host 192.168.0.246
+python3 -m app.client --host 192.168.0.246
 
-# Quick Login direto sem prompt interativo de credenciais
-python3 app/client.py --quick-login
-
-# Login explícito passando usuário diretamente
-python3 app/client.py --user naoki
-
-# Envio de mensagem direta via linha de comando
-python3 app/client.py --message "Olá Homelab via CLI!"
+# Envio de mensagem direta via linha de comando (após login interativo/automático)
+python3 -m app.client --message "Olá Homelab via CLI!"
 
 # Upload de arquivo de mídia em chunks indexados de 64KB
-python3 app/client.py --upload caminho/para/imagem.png
+python3 -m app.client --upload caminho/para/imagem.png
 ```
 
 ---
@@ -236,8 +236,8 @@ termux-battery-status
 
 ### 6.4. Execução Contínua em Background com PM2
 ```bash
-# Iniciar o servidor Homelab gerenciado pelo PM2
-pm2 start app/server.py --name "homelab-server" --interpreter python3
+# Iniciar o servidor Homelab gerenciado pelo PM2 (executa o pacote app/server)
+pm2 start app/server --name "homelab-server" --interpreter python3
 
 # Visualizar status dos daemons
 pm2 status

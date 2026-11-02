@@ -457,6 +457,6 @@ Permite a execução como módulo CLI (`python3 -m app.server` ou `python3 app/s
   A detecção de processo do servidor deve ser atualizada de:
   `pgrep -f "app/server.py"`
   Para contemplar invocação como pacote:
-  `pgrep -E -f "app/server(\.py)?|app\.server"`
+  `pgrep -f "app/server(\.py)?|app\.server"`
 - **Grafo de Propagação**:
   Atualizações em `docs/INDEX.md`, `docs/debts.md`, `docs/app/002-stack-definicao-e-arquitetura.md` e `.gemini/rules/commands.md` devem apontar diretamente para este documento canônico.

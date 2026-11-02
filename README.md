@@ -72,6 +72,8 @@ A documentação está organizada entre **Infraestrutura do Homelab** e **Aplica
    - Guia completo do utilitário `scripts/check-infra.sh` e matriz de diagnóstico.
 
 ### 💻 Aplicações e Arquitetura de Software (`docs/app/`)
+* [**SPEC - Arquitetura e Protocolo do Cliente OO**](docs/app/SPEC-client-architecture.md): Decomposição modular de `app/client/`, hierarquia `Package`, comandos OO e gestão de sessão.
+* [**SPEC - Arquitetura e Invariantes do Servidor OO**](docs/app/SPEC-server-architecture.md): Decomposição modular de `app/server/`, dispatcher de comandos, gestão de tickets e segurança PBKDF2/HMAC.
 * [**001. Conexão TCP via Sockets e Persistência de Logs**](docs/app/001-connection-tcp.md): Especificação do socket TCP puro na porta 9000 e gravação em arquivo.
 * [**002. Definição das Stacks de Infraestrutura e Software**](docs/app/002-stack-definicao-e-arquitetura.md): Diretrizes oficiais de arquitetura, hardware e stack oficial em Python 3.
 * [**003. Autenticação de Clientes, Classes OO e Quick Login**](docs/app/003-client-auth-and-storage.md): Especificação da tabela `clients` em SQLite, classes `Client`, `Session` e `Message`, e documento NoSQL para Quick Login.
@@ -116,12 +118,12 @@ homelab/
 ├── GEMINI.md
 ├── requirements.txt
 ├── app/
-│   ├── client.py              # Cliente CLI com Quick Login e envio de arquivos
-│   ├── server.py              # Daemon Dual-Channel TCP (Controle :9000 e Dados :9001)
+│   ├── client/                # Pacote modular do Cliente CLI (OO, commands, session)
+│   ├── server/                # Pacote modular do Servidor TCP (OO, dispatcher, tickets)
 │   ├── config.py              # Gestor de configurações e arquivos .env com Fail-Fast
-│   ├── protocol.py            # Framing binário de 40B, serialização de chunks e HMAC
+│   ├── protocol.py            # Hierarquia Package, framing binário de 40B/62B e HMAC
 │   ├── database.py            # Persistência SQLite (homelab.db), auth PBKDF2 e chaves HMAC
-│   ├── client_session.py      # Gestor de sessão local NoSQL (JSON) para Quick Login
+│   ├── client_session.py      # Wrapper de compatibilidade retroativa para app.client.session
 │   ├── data/
 │   │   ├── homelab.db         # Banco relacional de contas, presenças e mensagens
 │   │   └── uploads/           # Armazenamento de arquivos e mídias recebidos
@@ -133,6 +135,8 @@ homelab/
 │   └── client.env.sample      # Modelo exclusivo para o Cliente
 ├── docs/
 │   ├── app/
+│   │   ├── SPEC-client-architecture.md
+│   │   ├── SPEC-server-architecture.md
 │   │   ├── 001-connection-tcp.md
 │   │   ├── 002-stack-definicao-e-arquitetura.md
 │   │   ├── 003-client-auth-and-storage.md
@@ -147,10 +151,12 @@ homelab/
 │       ├── 06-capacidade-e-limites-fisicos-do-host.md
 │       └── 07-verificacao-e-saude-da-infraestrutura.md
 ├── tests/
+│   ├── test_adversarial_protocol_stress.py
 │   ├── test_auth_and_session.py
-│   ├── test_dual_protocol_and_chunks.py
+│   ├── test_check_infra.py
+│   ├── test_code_standards.py
 │   ├── test_config.py
-│   └── test_check_infra.py
+│   └── test_dual_protocol_and_chunks.py
 └── scripts/
     ├── 01-bootstrap-termux.sh
     ├── 02-setup-dev-stack.sh

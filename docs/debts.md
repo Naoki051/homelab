@@ -9,13 +9,13 @@
 
 A tabela abaixo sumariza as divergências técnicas identificadas no repositório, categorizadas por prioridade de mitigação e impacto arquitetural:
 
-| ID | Área / Domínio | Gravidade | Descrição do Débito | Alvo da Refatoração |
-| :--- | :--- | :--- | :--- | :--- |
-| **DEBT-01** | **Arquitetura OO da Rede** | Média | Camada de sockets e threads procedural em `server.py` e `client.py` | Classes `HomelabServer`, `ControlServer`, `DataServer` e `HomelabClient` |
-| **DEBT-02** | **Exceções Genéricas** | Alta | 22 ocorrências de `except Exception:` e capturas sem tipagem | Adoção estrita da hierarquia em `app/exceptions.py` |
-| **DEBT-03** | **Gerenciamento de Recursos** | Alta | `ResourceWarning: unclosed database` e sockets sem `with` | Uso mandatório de Context Managers e fechamento garantido |
-| **DEBT-04** | **Logging vs `print`** | Média | Uso de `print()` solto em código de servidor e ausência de mascarador | Padronização em `logging` nativo com `mask_secret()` |
-| **DEBT-05** | **Tipagem Estática (PEP 484)**| Baixa | Funções com tipagem parcial ou retorno implícito | 100% de type hints nas assinaturas públicas |
+| ID | Área / Domínio | Gravidade | Descrição do Débito | Alvo da Refatoração | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **DEBT-01** | **Arquitetura OO da Rede** | Média | Camada de sockets e threads procedural em `server.py` e `client.py` refatorada para pacotes modulares OO | Classes `HomelabServer`, `ControlServer`, `DataServer`, `HomelabClient` e `Package(ABC)` | **Resolvido** (2026-11-02) |
+| **DEBT-02** | **Exceções Genéricas** | Alta | 22 ocorrências de `except Exception:` e capturas sem tipagem | Adoção estrita da hierarquia em `app/exceptions.py` | Ativo |
+| **DEBT-03** | **Gerenciamento de Recursos** | Alta | `ResourceWarning: unclosed database` e sockets sem `with` | Uso mandatório de Context Managers e fechamento garantido | Ativo |
+| **DEBT-04** | **Logging vs `print`** | Média | Uso de `print()` solto em código de servidor e ausência de mascarador | Padronização em `logging` nativo com `mask_secret()` | Ativo |
+| **DEBT-05** | **Tipagem Estática (PEP 484)**| Baixa | Funções com tipagem parcial ou retorno implícito | 100% de type hints nas assinaturas públicas | Ativo |
 
 ---
 
@@ -23,12 +23,46 @@ A tabela abaixo sumariza as divergências técnicas identificadas no repositóri
 
 ### DEBT-01: Arquitetura Cliente-Servidor Orientada a Objetos (OO)
 
-#### Diagnóstico Atual:
-- Em [`app/server.py`](../app/server.py), o ciclo de vida dos listeners é iniciado por funções procedurais (`start_control_server`, `start_data_server`), orquestradas por threads manuais em `main()`.
-- Em [`app/client.py`](../app/client.py), o envio de mensagens e uploads é gerenciado por uma cascata de funções procedurais misturadas com o menu de terminal (`interactive_menu`).
-- Embora existam classes de dados bem estruturadas (`UploadTicket`, `UploadTicketManager`, `ClientRepository`), a camada de rede ainda carece de encapsulamento OO.
+> **Status:** **RESOLVIDO**  
+> **Data de Resolução:** 2026-11-02  
+> **Branch de Resolução:** `refactor/client-server-oo-architecture`  
+> **Commits:** `0ffc014` (setup gitignore), `de9a324` (especificações canônicas), `b5e892c` (protocolo Package ABC), `0e083a1` (pacote modular client), `273f25c` (pacote modular server), `3644f94` (cleanup determinístico de presença)  
+> **Validação de Testes:** 84/84 testes unitários e de integração (100% OK) | 20/20 testes adversariais de concorrência e estresse (100% OK)  
+> **Documentos Canônicos:** [`docs/app/SPEC-client-architecture.md`](app/SPEC-client-architecture.md) e [`docs/app/SPEC-server-architecture.md`](app/SPEC-server-architecture.md)
 
-#### Estrutura-Alvo Planejada:
+#### Diagnóstico Histórico (Legado):
+- No monólito original `app/server.py`, o ciclo de vida dos listeners era iniciado por funções procedurais (`start_control_server`, `start_data_server`), orquestradas por threads manuais em `main()`.
+- No monólito original `app/client.py`, o envio de mensagens e uploads era gerenciado por uma cascata de funções procedurais misturadas com o menu de terminal (`interactive_menu`).
+- Embora existissem classes de dados (`UploadTicket`, `UploadTicketManager`, `ClientRepository`), a camada de rede e despacho de comandos carecia de encapsulamento OO e abstração polimórfica.
+
+#### Resolução Implementada e Entregue:
+1. **Classe Base Abstrata de Protocolo (`Package(ABC)` em `app/protocol.py`):**
+   - Contratos polimórficos de serialização (`to_frame_bytes`), transmissão (`send`) e leitura (`read_frame`).
+   - Herança implementada por `Message` (`ControlPackage`, porta 9000, 40B header + JSON) e `MediaChunk` (`DataPackage`, porta 9001, 62B header + binário).
+2. **Pacote Modular do Cliente (`app/client/`):**
+   - Decomposição em módulos de responsabilidade única:
+     - `session.py`: Armazenamento de sessão local NoSQL (JSON) com Quick Login e permissões POSIX 0600.
+     - `conn_handler.py`: Gerenciamento de conexões TCP (`ControlConnection` e `ClientConnectionHandler`).
+     - `commands.py`: Padrão Command (`RegisterCommand`, `LoginCommand`, `SendMessageCommand`, `UploadFileCommand`, `LogoutCommand`).
+     - `client.py`: Fachada de alto nível `HomelabClient` (alias `Client`).
+     - `menus.py`: Interface interativa de linha de comando (`ClientTerminalUI`) com complexidade ciclomática <= 12.
+     - `__init__.py` e `__main__.py`: Re-exportações públicas garantindo retrocompatibilidade total e entrypoint CLI (`python3 -m app.client`).
+   - Re-exportação mantida em `app/client_session.py` para compatibilidade retroativa com código legado.
+3. **Pacote Modular do Servidor (`app/server/`):**
+   - Decomposição em módulos desacoplados:
+     - `tickets.py`: `UploadTicketManager` thread-safe com lock de concorrência, expiração e integridade SHA-256.
+     - `commands.py`: Contexto `ServerCommandContext`, estrutura `ServerCommandResult`, `ServerCommandDispatcher` e handlers dedicados (`RegisterCommandHandler`, `LoginCommandHandler`, `SendMessageCommandHandler`, `RequestUploadCommandHandler`, `LogoutCommandHandler`).
+     - `conn_handler.py`: Serviços de rede `BaseNetworkService`, `ControlServer` (:9000) e `DataServer` (:9001).
+     - `server.py`: Fachada `HomelabServer` (alias `Server`, `DualChannelServer`).
+     - `__init__.py` e `__main__.py`: Re-exportações públicas e entrypoint executável via `python3 -m app.server`.
+4. **Remoção Segura de Monólitos:**
+   - Remoção completa de `app/client.py` e `app/server.py` sem breaking changes em imports ou APIs públicas.
+5. **Invariantes de Segurança e Presença:**
+   - Autenticação PBKDF2 com salt aleatório de 16B e 100.000 iterações.
+   - Chave de sessão HMAC emitida dinamicamente no login e vinculada a tickets de upload.
+   - Ciclo de vida determinístico de presença (online no login, offline no logout ou em disconnect abrupto/broken pipe).
+
+#### Estrutura Arquitetural Entregue:
 ```mermaid
 classDiagram
     class BaseNetworkService {
@@ -145,4 +179,4 @@ Determinadas funções utilitárias em módulos legados não possuem tipagem exp
 | :--- | :--- | :--- |
 | **Sprint 1** | Resolução do DEBT-03 (Context Managers & SQLite) e DEBT-02 (Exceções de Domínio) | `refactor/exceptions-and-resources` |
 | **Sprint 2** | Resolução do DEBT-04 (Logging Nativo & Mascaramento de Segredos) | `refactor/logging-and-masking` |
-| **Sprint 3** | Resolução do DEBT-01 (Arquitetura OO de Rede) e DEBT-05 (Type Hints) | `refactor/server-client-oo` |
+| **Sprint 3** | Resolução do DEBT-01 (Arquitetura OO de Rede) e DEBT-05 (Type Hints) | `refactor/client-server-oo-architecture` (DEBT-01 Concluído) |

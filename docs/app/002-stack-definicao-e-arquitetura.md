@@ -73,17 +73,33 @@ A linguagem padrão homologada para o desenvolvimento dos serviços e aplicaçõ
 ```text
 homelab/
 ├── app/
-│   ├── server.py              # Daemon Dual-Channel TCP (Controle :9000 e Dados :9001)
-│   ├── client.py              # Cliente CLI interativo com Quick Login e envio de arquivos
+│   ├── client/                # Pacote modular OO do cliente (Camada de Apresentação e Conexão)
+│   │   ├── __init__.py        # Re-exportações públicas (Client, HomelabClient, Session)
+│   │   ├── __main__.py        # Entrypoint CLI executável (python3 -m app.client)
+│   │   ├── client.py          # Fachada HomelabClient e orquestração de alto nível
+│   │   ├── commands.py        # Padrão Command (Register, Login, SendMessage, UploadFile, Logout)
+│   │   ├── conn_handler.py    # Handlers TCP (ControlConnection e ClientConnectionHandler)
+│   │   ├── menus.py           # Interface interativa de terminal (ClientTerminalUI)
+│   │   └── session.py         # Persistência de sessão NoSQL (JSON) e Quick Login
+│   ├── server/                # Pacote modular OO do servidor Dual-Channel (:9000 e :9001)
+│   │   ├── __init__.py        # Re-exportações públicas (Server, HomelabServer, ControlServer, DataServer)
+│   │   ├── __main__.py        # Entrypoint CLI executável (python3 -m app.server)
+│   │   ├── commands.py        # Dispatcher desacoplado e handlers de comando com ServerCommandResult
+│   │   ├── conn_handler.py    # Handlers de rede (BaseNetworkService, ControlServer e DataServer)
+│   │   ├── server.py          # Fachada HomelabServer e gerenciamento de ciclo de vida
+│   │   └── tickets.py         # UploadTicketManager thread-safe com integridade SHA-256
+│   ├── client_session.py      # Shim de compatibilidade retroativa para app.client.session
 │   ├── config.py              # Central de configurações e parsing de arquivos .env (Fail-Fast)
-│   ├── protocol.py            # Framing binário de 40B, serialização de chunks e HMAC
 │   ├── database.py            # Persistência SQLite (homelab.db), auth PBKDF2 e chaves HMAC
-│   ├── client_session.py      # Gestor de sessão local NoSQL (JSON) para Quick Login
+│   ├── exceptions.py          # Hierarquia especializada de exceções de domínio Homelab
+│   ├── logger.py              # Configuração centralizada de logging e mascaramento de segredos
+│   ├── protocol.py            # Classe abstrata Package(ABC), framing binário (40B/62B) e HMAC
 │   ├── data/                  # Base de dados (homelab.db) e arquivos de mídia (uploads/)
 │   └── logs/                  # Diretório de persistência de logs locais
+├── docs/                      # Documentação canônica, roteador INDEX.md e especificações SPEC
 ├── envs/                      # Configurações de ambiente (server.env, client.env, .env.sample)
 ├── scripts/                   # Automação de infraestrutura, bootstrap e check-infra.sh
-├── tests/                     # Suíte automatizada com testes de unidade e integração
+├── tests/                     # Suíte automatizada com testes de unidade, integração e stress
 └── requirements.txt           # Dependências do projeto (ex: python-dotenv)
 ```
 
@@ -110,8 +126,10 @@ homelab/
 Para manter o servidor Python rodando em background 24/7 no Termux com recuperação automática de falhas, recomenda-se o uso do **PM2**:
 
 ```bash
-# Inicializar o servidor gerenciado pelo PM2
-pm2 start app/server.py --name "tcp-server" --interpreter python3
+# Inicializar o servidor gerenciado pelo PM2 via módulo canônico
+pm2 start -m app.server --name "tcp-server" --interpreter python3
+# Ou via diretório do pacote:
+# pm2 start app/server --name "tcp-server" --interpreter python3
 
 # Verificar status e monitorar consumo
 pm2 status
@@ -126,11 +144,11 @@ pm2 save
 ## 4. Roteiro de Evolução da Stack
 
 ```text
-[Fase 1: Conexão TCP Pura] (Atual)
+[Fase 1: Conexão TCP Pura] (Concluído)
 └── Python nativo (socket), persistência em arquivo de log, porta 9000.
 
-[Fase 2: Protocolo Estruturado]
-└── Serialização de mensagens em JSON, autenticação por token leve, tratamento multi-cliente concorrente.
+[Fase 2: Protocolo Estruturado e Arquitetura Modular OO] (Concluído)
+└── Package(ABC), pacotes modulares app/client/ e app/server/, dual-channel (:9000/:9001), Quick Login NoSQL, HMAC dinâmico e streaming de chunks (64KB).
 
 [Fase 3: Camada Web e Proxy Reverso]
 └── API HTTP com FastAPI + Uvicorn na porta 8000, roteada pelo Caddy na porta 8080 com terminação TLS.

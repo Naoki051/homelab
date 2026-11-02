@@ -10,11 +10,13 @@ Consulte a tabela abaixo para ir diretamente ao documento de especificação, ao
 
 | Domínio / Assunto | Documento Canônico de Especificação | Implementação Principal | Suíte de Testes Automatizados |
 | :--- | :--- | :--- | :--- |
-| **Conexão TCP Básica e Logs** | [`docs/app/001-connection-tcp.md`](app/001-connection-tcp.md) | [`app/server.py`](../app/server.py), [`app/client.py`](../app/client.py) | [`tests/test_auth_and_session.py`](../tests/test_auth_and_session.py) |
+| **Conexão TCP Básica e Logs** | [`docs/app/001-connection-tcp.md`](app/001-connection-tcp.md) | [`app/server/`](../app/server/), [`app/client/`](../app/client/) | [`tests/test_auth_and_session.py`](../tests/test_auth_and_session.py) |
 | **Definição de Stacks & Arquitetura** | [`docs/app/002-stack-definicao-e-arquitetura.md`](app/002-stack-definicao-e-arquitetura.md) | Todo o diretório [`app/`](../app/) | Todas as suítes |
 | **Autenticação, Clientes & Sessão NoSQL** | [`docs/app/003-client-auth-and-storage.md`](app/003-client-auth-and-storage.md) | [`app/database.py`](../app/database.py), [`app/client_session.py`](../app/client_session.py) | [`tests/test_auth_and_session.py`](../tests/test_auth_and_session.py) |
 | **Framing Binário (40B) & HMAC Dinâmico** | [`docs/app/004-protocolos-controle-e-dados.md`](app/004-protocolos-controle-e-dados.md) | [`app/protocol.py`](../app/protocol.py) | [`tests/test_dual_protocol_and_chunks.py`](../tests/test_dual_protocol_and_chunks.py) |
-| **Upload em Chunks (64KB) & Canal de Dados** | [`docs/app/004-protocolos-controle-e-dados.md`](app/004-protocolos-controle-e-dados.md) | [`app/server.py`](../app/server.py), [`app/client.py`](../app/client.py) | [`tests/test_dual_protocol_and_chunks.py`](../tests/test_dual_protocol_and_chunks.py) |
+| **Upload em Chunks (64KB) & Canal de Dados** | [`docs/app/004-protocolos-controle-e-dados.md`](app/004-protocolos-controle-e-dados.md) | [`app/server/`](../app/server/), [`app/client/`](../app/client/) | [`tests/test_dual_protocol_and_chunks.py`](../tests/test_dual_protocol_and_chunks.py) |
+| **Arquitetura Modular do Cliente & Protocolo OO** | [`docs/app/SPEC-client-architecture.md`](app/SPEC-client-architecture.md) | [`app/client/`](../app/client/), [`app/protocol.py`](../app/protocol.py) | [`tests/test_auth_and_session.py`](../tests/test_auth_and_session.py), [`tests/test_adversarial_protocol_stress.py`](../tests/test_adversarial_protocol_stress.py) |
+| **Arquitetura Modular do Servidor & Despacho OO** | [`docs/app/SPEC-server-architecture.md`](app/SPEC-server-architecture.md) | [`app/server/`](../app/server/), [`app/protocol.py`](../app/protocol.py) | [`tests/test_dual_protocol_and_chunks.py`](../tests/test_dual_protocol_and_chunks.py), [`tests/test_adversarial_protocol_stress.py`](../tests/test_adversarial_protocol_stress.py) |
 | **Configurações, `.env` e Fail-Fast** | [`docs/app/005-gerenciamento-de-configuracoes-e-env.md`](app/005-gerenciamento-de-configuracoes-e-env.md) | [`app/config.py`](../app/config.py), [`envs/`](../envs/) | [`tests/test_config.py`](../tests/test_config.py) |
 | **Preparação Android & MIUI (Bloatware, ADB)**| [`docs/infra/01-preparacao-miui-android.md`](infra/01-preparacao-miui-android.md) | Configurações do SO no aparelho | — |
 | **Rede, SSH (8022/2022) e Tailscale** | [`docs/infra/02-rede-ssh-e-acesso-remoto.md`](infra/02-rede-ssh-e-acesso-remoto.md) | `~/.ssh/config` | — |
@@ -48,11 +50,15 @@ graph TD
     A002 --> A003["app/003 (Auth & Quick Login)"]:::app
     A003 --> A004["app/004 (Dual-Protocol & HMAC)"]:::app
     A004 --> A005["app/005 (Config & .env)"]:::app
+    A004 --> SPEC_CLI["app/SPEC-client (Arquitetura Cliente & Protocol OO)"]:::app
+    A004 --> SPEC_SRV["app/SPEC-server (Arquitetura Servidor & Despacho OO)"]:::app
 
     I07 -.->|"Valida portas e variáveis"| A005
     A005 --> R["README.md"]:::root
     I07 --> R
     A004 --> R
+    SPEC_CLI --> R
+    SPEC_SRV --> R
 ```
 
 ---
@@ -74,6 +80,8 @@ graph TD
 3. [**003. Autenticação de Clientes, Classes OO e Quick Login**](app/003-client-auth-and-storage.md): Persistência no SQLite (`homelab.db`), classes OO `Client`, `Session` e `Message`, credenciais com PBKDF2 e Quick Login NoSQL.
 4. [**004. Arquitetura Dual-Protocol (Controle Persistente e Chunks de Mídia)**](app/004-protocolos-controle-e-dados.md): Framing binário de 40B na porta 9000, streaming de chunks de 64KB na porta 9001 e assinatura HMAC-SHA256 com chave dinâmica.
 5. [**005. Gerenciamento de Configurações, Variáveis de Ambiente e Arquivos .env**](app/005-gerenciamento-de-configuracoes-e-env.md): Módulo central `app/config.py`, separação `server.env` / `client.env`, precedência em camadas e fail-fast.
+6. [**SPEC-client. Arquitetura Orientada a Objetos do Cliente e Protocolo Homelab**](app/SPEC-client-architecture.md): Especificação canônica da classe base abstrata `Package(ABC)`, hierarquia de pacotes `Message` e `MediaChunk`, decomposição do pacote modular `app/client/` (`session`, `conn_handler`, `commands`, `client`, `menus`) e governança de tipos e exceções.
+7. [**SPEC-server. Arquitetura Modular do Servidor Homelab**](app/SPEC-server-architecture.md): Especificação canônica da decomposição modular em `app/server/` (`tickets`, `commands`, `conn_handler`, `server`), dispatcher de comandos desacoplado via padrão Command, gerenciamento thread-safe de tickets de upload e invariantes de autenticação PBKDF2, HMAC e presença.
 
 ### C. Governança de Engenharia, Qualidade e Débitos Técnicos
 1. [**Inventário de Débitos Técnicos e Roadmap de Refatoração**](debts.md): Mapeamento das 5 áreas de dívida técnica (Arquitetura OO, remoção de exceptions genéricas, context managers, logging vs print e type hints).

@@ -383,12 +383,12 @@ except Exception:
         fi
     fi
 
-    # 6.6 Processo app/server.py e Escuta de Portas
-    SERVER_PIDS=$(pgrep -f "app/server.py" 2>/dev/null || true)
+    # 6.6 Processo do Servidor (app/server, app.server ou app/server.py) e Escuta de Portas
+    SERVER_PIDS=$(pgrep -f "app/server(\.py)?|app\.server" 2>/dev/null || true)
     if [ -n "$SERVER_PIDS" ]; then
         log_success "Processo do servidor em execução (PID: $(echo "$SERVER_PIDS" | tr '\n' ' '))"
     else
-        log_info "Processo app/server.py não está ativo no momento."
+        log_info "Processo do servidor (app/server ou app.server) não está ativo no momento."
     fi
 
     check_port_listening() {

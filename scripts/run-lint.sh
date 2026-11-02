@@ -7,7 +7,7 @@
 #
 # Uso:
 #   ./scripts/run-lint.sh             # Audita os diretórios padrão (app/ e tests/)
-#   ./scripts/run-lint.sh app/server.py # Audita arquivo específico
+#   ./scripts/run-lint.sh app/server/  # Audita arquivo ou pacote específico
 # ==============================================================================
 
 set -euo pipefail
