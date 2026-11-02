@@ -65,6 +65,25 @@ class AdversarialServerTestCase(unittest.TestCase):
         self.server.stop()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
+    def _wait_for_user_status(
+        self, username: str, expected_status: str, timeout: float = 1.0
+    ) -> None:
+        """Aguarda de forma não-bloqueante a propagação do status de presença no SQLite."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            user = self.server.repo.get_by_username(username)
+            if user and user.status == expected_status:
+                return
+            time.sleep(0.02)
+        user = self.server.repo.get_by_username(username)
+        actual = user.status if user else None
+        self.assertEqual(
+            actual,
+            expected_status,
+            f"Timeout ({timeout}s): Usuário '{username}' permaneceu com status '{actual}' "
+            f"(esperado: '{expected_status}')",
+        )
+
 
 class TestControlChannelAdversarialFraming(AdversarialServerTestCase):
     """Cenário 1: Enquadramento binário inválido ou corrompido no Canal de Controle."""
@@ -115,6 +134,12 @@ class TestControlChannelAdversarialFraming(AdversarialServerTestCase):
                 self.assertEqual(len(data), 0, "Servidor deveria ter fechado a conexão")
             except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError):
                 pass
+
+        # Servidor deve limpar o status de presença para offline mesmo com erro de protocolo
+        self._wait_for_user_status("user_magic_pers", "offline")
+        user_pers = self.server.repo.get_by_username("user_magic_pers")
+        self.assertIsNotNone(user_pers)
+        self.assertEqual(user_pers.status, "offline")
 
         # Servidor continua saudável
         with HomelabClient(host="127.0.0.1", control_port=self.server.control_port) as client:
@@ -220,6 +245,90 @@ class TestControlChannelAdversarialFraming(AdversarialServerTestCase):
                 pass
 
         self.assertTrue(self.server.is_running)
+
+    def test_presence_cleanup_on_tcp_rst(self) -> None:
+        """Valida que queda abrupta por TCP RST (SO_LINGER=0) transiciona usuário para offline."""
+        username = "user_rst_presence"
+        secret = Session.derive_secret(username, "senha_rst_123")
+        self.server.repo.register(username, secret)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.connect(("127.0.0.1", self.server.control_port))
+            sock.settimeout(2.0)
+
+            # 1. Realiza login do usuário no canal de controle
+            login_msg = Message(
+                action=Message.ACTION_LOGIN,
+                payload={"username": username, "password": secret},
+            )
+            login_msg.send_framed(sock, hmac_key=DEFAULT_HANDSHAKE_KEY)
+            resp = Message.recv_framed(sock, hmac_key=DEFAULT_HANDSHAKE_KEY)
+            self.assertIsNotNone(resp)
+            self.assertEqual(resp.payload.get("status"), Message.STATUS_OK)
+
+            # 2. Confirma que o status ativo inicial é 'online'
+            user = self.server.repo.get_by_username(username)
+            self.assertIsNotNone(user)
+            self.assertEqual(user.status, "online")
+
+            # 3. Força reset abrupto via TCP RST (l_onoff=1, l_linger=0) sem handshake de término
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+
+        # 4. Invariante: servidor deve detectar ConnectionResetError e limpar para 'offline'
+        self._wait_for_user_status(username, "offline")
+
+        # 5. Garante que o servidor continua operante após o RST
+        with HomelabClient(host="127.0.0.1", control_port=self.server.control_port) as client:
+            ok, msg = client.login(username, "senha_rst_123")
+            self.assertTrue(ok, msg)
+
+    def test_presence_cleanup_on_malformed_magic_frame(self) -> None:
+        """Valida que erro por magic inválido em sessão ativa transiciona usuário para offline."""
+        username = "user_magic_cleanup"
+        secret = Session.derive_secret(username, "senha_magic_123")
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.connect(("127.0.0.1", self.server.control_port))
+            sock.settimeout(2.0)
+
+            # 1. Registra novo usuário obtendo sessão persistente e chave HMAC derivada
+            reg_msg = Message(
+                action=Message.ACTION_REGISTER,
+                payload={"username": username, "password": secret},
+            )
+            reg_msg.send_framed(sock, hmac_key=DEFAULT_HANDSHAKE_KEY)
+            resp = Message.recv_framed(sock, hmac_key=DEFAULT_HANDSHAKE_KEY)
+            self.assertIsNotNone(resp)
+            self.assertEqual(resp.payload.get("status"), Message.STATUS_OK)
+            session_key = bytes.fromhex(resp.payload["session_key"])
+
+            # 2. Valida presença online logo após o cadastro
+            user = self.server.repo.get_by_username(username)
+            self.assertIsNotNone(user)
+            self.assertEqual(user.status, "online")
+
+            # 3. Transmite frame com Magic Bytes inválidos (b'ZZ') na sessão autenticada
+            payload = b"0123456789"
+            meta_prefix = struct.pack(">2sHI", b"ZZ", Message.MSG_TYPE_REQUEST, len(payload))
+            mac = compute_hmac(session_key, meta_prefix + payload)
+            header = struct.pack(
+                CONTROL_HEADER_FORMAT, b"ZZ", Message.MSG_TYPE_REQUEST, len(payload), mac
+            )
+            sock.sendall(header + payload)
+
+            # 4. Servidor deve registrar ProtocolError e fechar o socket
+            try:
+                sock.recv(1024)
+            except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError):
+                pass
+
+        # 5. Invariante: servidor deve executar cleanup para 'offline' no finally da conexão
+        self._wait_for_user_status(username, "offline")
+
+        # 6. Servidor continua saudável e aceita reautenticação
+        with HomelabClient(host="127.0.0.1", control_port=self.server.control_port) as client:
+            ok, msg = client.login(username, "senha_magic_123")
+            self.assertTrue(ok, msg)
 
 
 class TestDataChannelAdversarialChunks(AdversarialServerTestCase):

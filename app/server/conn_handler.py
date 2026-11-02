@@ -10,13 +10,12 @@ from pathlib import Path
 import socket
 import sqlite3
 import threading
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from app.config import load_server_config
 from app.database import ClientRepository
 from app.exceptions import (
-    AuthenticationError,
-    HMACVerificationError,
+    HomelabError,
     ProtocolError,
     StorageError,
     mask_secret,
@@ -282,9 +281,12 @@ def _run_control_framed_loop(
     data_port: int,
     dispatcher: Optional[ServerCommandDispatcher],
     prefix: bytes,
+    session_state: Optional[Dict[str, Optional[str]]] = None,
 ) -> Optional[str]:
     client_ip, client_port = client_address
-    active_username: Optional[str] = None
+    active_username: Optional[str] = (
+        session_state.get("active_username") if session_state else None
+    )
     current_hmac_key: bytes = DEFAULT_HANDSHAKE_KEY
     first_iteration = True
 
@@ -312,6 +314,8 @@ def _run_control_framed_loop(
                 data_port=data_port,
                 dispatcher=dispatcher,
             )
+            if session_state is not None:
+                session_state["active_username"] = active_username
         except (StorageError, sqlite3.DatabaseError) as db_err:
             logger.error(
                 "Erro de banco de dados no Canal de Controle (%s:%s): %s",
@@ -342,6 +346,7 @@ def _handle_control_unframed(
     ticket_manager: UploadTicketManager,
     data_port: int,
     prefix: bytes,
+    session_state: Optional[Dict[str, Optional[str]]] = None,
 ) -> Optional[str]:
     rest = client_socket.recv(BUFFER_SIZE)
     raw_data = prefix + rest
@@ -353,6 +358,8 @@ def _handle_control_unframed(
         ticket_manager=ticket_manager,
         data_port=data_port,
     )
+    if session_state is not None:
+        session_state["active_username"] = active_username
     client_socket.sendall(response_bytes)
     return active_username
 
@@ -364,16 +371,24 @@ def _cleanup_control_connection(
     active_username: Optional[str],
 ) -> None:
     client_ip, client_port = client_address
-    if active_username:
-        try:
-            repo.update_status(active_username, "offline")
-        except (StorageError, sqlite3.DatabaseError):
-            pass
     try:
-        client_socket.close()
-    except OSError:
-        pass
-    logger.info("Conexão de controle encerrada com %s:%s", client_ip, client_port)
+        if active_username:
+            try:
+                repo.update_status(active_username, "offline")
+            except (HomelabError, sqlite3.DatabaseError, OSError, ValueError) as err:
+                logger.warning(
+                    "Falha ao atualizar presença para offline de '%s' (%s:%s): %s",
+                    active_username,
+                    client_ip,
+                    client_port,
+                    err,
+                )
+    finally:
+        try:
+            client_socket.close()
+        except OSError:
+            pass
+        logger.info("Conexão de controle encerrada com %s:%s", client_ip, client_port)
 
 
 def handle_control_client_connection(
@@ -387,14 +402,14 @@ def handle_control_client_connection(
 ) -> None:
     """Atende conexão persistente ou legada no Canal de Controle."""
     client_ip, client_port = client_address
-    active_username: Optional[str] = None
+    session_state: Dict[str, Optional[str]] = {"active_username": None}
     try:
         prefix = client_socket.recv(2)
         if not prefix:
             return
 
         if prefix == CONTROL_MAGIC:
-            active_username = _run_control_framed_loop(
+            _run_control_framed_loop(
                 client_socket,
                 client_address,
                 repo,
@@ -403,9 +418,10 @@ def handle_control_client_connection(
                 data_port,
                 dispatcher,
                 prefix,
+                session_state=session_state,
             )
         else:
-            active_username = _handle_control_unframed(
+            _handle_control_unframed(
                 client_socket,
                 client_address,
                 repo,
@@ -413,17 +429,12 @@ def handle_control_client_connection(
                 ticket_manager,
                 data_port,
                 prefix,
+                session_state=session_state,
             )
 
     except (
-        ProtocolError,
-        HMACVerificationError,
-        AuthenticationError,
-        StorageError,
+        HomelabError,
         sqlite3.DatabaseError,
-        ConnectionResetError,
-        BrokenPipeError,
-        TimeoutError,
         OSError,
         ValueError,
     ) as e:
@@ -438,7 +449,12 @@ def handle_control_client_connection(
             except OSError:
                 pass
     finally:
-        _cleanup_control_connection(client_socket, client_address, repo, active_username)
+        _cleanup_control_connection(
+            client_socket,
+            client_address,
+            repo,
+            session_state.get("active_username"),
+        )
 
 
 def _write_chunk_to_disk(ticket: UploadTicket, chunk: MediaChunk) -> None:
@@ -493,8 +509,23 @@ def _finalize_upload(
             "saved_path": str(ticket.dest_path),
         },
     )
-    ok_resp.send_framed(client_socket, hmac_key=ticket.session_key)
-    ticket_manager.remove_ticket(ticket.ticket_hex)
+    try:
+        ok_resp.send_framed(client_socket, hmac_key=ticket.session_key)
+    finally:
+        ticket_manager.remove_ticket(ticket.ticket_hex)
+
+
+def _cleanup_data_connection(
+    client_socket: socket.socket,
+    client_address: Tuple[str, int],
+) -> None:
+    """Encerra o socket do canal de dados com tolerância a falhas."""
+    client_ip, client_port = client_address
+    try:
+        client_socket.close()
+    except OSError:
+        pass
+    logger.info("Conexão de dados encerrada com %s:%s", client_ip, client_port)
 
 
 def handle_data_client_connection(
@@ -535,12 +566,8 @@ def handle_data_client_connection(
                 break
 
     except (
-        ProtocolError,
-        HMACVerificationError,
-        StorageError,
-        ConnectionResetError,
-        BrokenPipeError,
-        TimeoutError,
+        HomelabError,
+        sqlite3.DatabaseError,
         OSError,
         ValueError,
     ) as e:
@@ -552,7 +579,4 @@ def handle_data_client_connection(
             except (OSError, ProtocolError, ValueError):
                 pass
     finally:
-        try:
-            client_socket.close()
-        except OSError:
-            pass
+        _cleanup_data_connection(client_socket, client_address)
