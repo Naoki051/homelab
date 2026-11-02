@@ -28,7 +28,7 @@ from app.exceptions import (  # noqa: E402
     mask_password,
     mask_secret,
 )
-from app.logging import (  # noqa: E402
+from app.logger import (  # noqa: E402
     HOMELAB_DATE_FORMAT,
     HOMELAB_LOG_FORMAT,
     get_logger,

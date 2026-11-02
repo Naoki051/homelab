@@ -38,7 +38,7 @@ try:
         mask_password,
         mask_secret,
     )
-    from app.logging import get_logger
+    from app.logger import get_logger
     from app.protocol import (
         CHUNK_SIZE,
         CONTROL_MAGIC,
@@ -60,7 +60,7 @@ except ImportError:
         mask_password,
         mask_secret,
     )
-    from logging_compat import get_logger  # type: ignore
+    from logger import get_logger  # type: ignore
     from protocol import (
         CHUNK_SIZE,
         CONTROL_MAGIC,
