@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """
 Testes automatizados para os Dois Protocolos de Comunicação:
-1. Protocolo de Controle (Framing Binário de 40B + HMAC-SHA256 com chave dinâmica e conexão TCP persistente)
-2. Protocolo de Dados/Mídia (Chunks Indexados de 64KB + Cabeçalho de 62B + HMAC-SHA256 e streaming para disco)
+1. Protocolo de Controle (Framing Binário de 40B + HMAC-SHA256 com chave dinâmica
+   e conexão TCP persistente)
+2. Protocolo de Dados/Mídia (Chunks Indexados de 64KB + Cabeçalho de 62B + HMAC-SHA256
+   e streaming para disco)
 """
 
+from abc import ABC
 import hashlib
 import os
 from pathlib import Path
 import shutil
+import socket
 import tempfile
 import time
+from typing import List
 import unittest
 
 from app.client import ControlConnection
@@ -19,9 +24,14 @@ from app.protocol import (
     CHUNK_HEADER_SIZE,
     CHUNK_SIZE,
     CONTROL_HEADER_SIZE,
+    CONTROL_MAGIC,
+    DATA_MAGIC,
     DEFAULT_HANDSHAKE_KEY,
+    ControlPackage,
+    DataPackage,
     MediaChunk,
     Message,
+    Package,
     generate_session_key,
     generate_upload_ticket,
 )
@@ -157,7 +167,8 @@ class TestDualChannelEndToEnd(unittest.TestCase):
             self.assertTrue(conn.send_text("naoki_dual", "Segunda mensagem sem novo handshake TCP"))
             self.assertEqual(conn.sock.getsockname()[1], first_local_port)
 
-            # 3. Cria um arquivo binário de 165 KB (3 chunks de até 64 KB) para upload no Canal de Dados
+            # 3. Cria um arquivo binário de 165 KB (3 chunks de até 64 KB)
+            # para upload no Canal de Dados
             source_file = Path(self.temp_dir) / "foto_homelab.png"
             source_bytes = os.urandom(165 * 1024)
             source_file.write_bytes(source_bytes)
@@ -313,6 +324,128 @@ class TestServerOOArchitecture(unittest.TestCase):
             server.stop()
 
         self.assertFalse(server.running)
+
+
+class TestPackageBaseClassHierarchy(unittest.TestCase):
+    """Valida a hierarquia de classes Package, Message e MediaChunk no app.protocol."""
+
+    def test_package_is_abstract_and_cannot_be_instantiated(self) -> None:
+        """Garante que Package é classe abstrata e não pode ser instanciada diretamente."""
+        self.assertTrue(issubclass(Package, ABC))
+        with self.assertRaises(TypeError):
+            Package()  # type: ignore
+
+        # Garante que subclasse incompleta também não pode ser instanciada
+        class IncompletePackage(Package):
+            pass
+
+        with self.assertRaises(TypeError):
+            IncompletePackage()  # type: ignore
+
+    def test_message_and_mediachunk_subclass_and_instantiate_package(self) -> None:
+        """Garante que Message e MediaChunk herdam e instanciam Package."""
+        self.assertTrue(issubclass(Message, Package))
+        self.assertTrue(issubclass(MediaChunk, Package))
+
+        msg = Message(action=Message.ACTION_SEND, payload={"test": "hierarchy"})
+        self.assertIsInstance(msg, Package)
+        self.assertIsInstance(msg, Message)
+
+        ticket = generate_upload_ticket()
+        chunk = MediaChunk(ticket=ticket, chunk_index=0, total_chunks=1, data=b"abc")
+        self.assertIsInstance(chunk, Package)
+        self.assertIsInstance(chunk, MediaChunk)
+
+    def test_control_package_and_data_package_aliases(self) -> None:
+        """Garante que ControlPackage e DataPackage são aliases canônicos válidos."""
+        self.assertIs(ControlPackage, Message)
+        self.assertIs(DataPackage, MediaChunk)
+        self.assertTrue(issubclass(ControlPackage, Package))
+        self.assertTrue(issubclass(DataPackage, Package))
+
+    def test_message_polymorphic_to_frame_bytes_send_read_frame(self) -> None:
+        """Valida to_frame_bytes, send e read_frame polimórficos em Message via socketpair."""
+        session_key = generate_session_key()
+        msg = Message(action=Message.ACTION_SEND, payload={"text": "teste polimorfico"})
+
+        frame_bytes = msg.to_frame_bytes(hmac_key=session_key)
+        self.assertEqual(frame_bytes, msg.to_frame(hmac_key=session_key))
+
+        client_sock, server_sock = socket.socketpair()
+        try:
+            msg.send(client_sock, hmac_key=session_key)
+            received = Message.read_frame(server_sock, hmac_key=session_key)
+            self.assertIsNotNone(received)
+            self.assertIsInstance(received, Package)
+            self.assertIsInstance(received, Message)
+            self.assertEqual(received.action, Message.ACTION_SEND)
+            self.assertEqual(received.payload["text"], "teste polimorfico")
+        finally:
+            client_sock.close()
+            server_sock.close()
+
+    def test_mediachunk_polymorphic_to_frame_bytes_send_read_frame(self) -> None:
+        """Valida to_frame_bytes, send e read_frame polimórficos em MediaChunk via socketpair."""
+        session_key = generate_session_key()
+        ticket = generate_upload_ticket()
+        chunk = MediaChunk(
+            ticket=ticket,
+            chunk_index=0,
+            total_chunks=1,
+            data=b"bloco binario polimorfico",
+        )
+
+        frame_bytes = chunk.to_frame_bytes(hmac_key=session_key)
+        self.assertEqual(frame_bytes, chunk.to_bytes(hmac_key=session_key))
+
+        client_sock, server_sock = socket.socketpair()
+        try:
+            chunk.send(client_sock, hmac_key=session_key)
+            received = MediaChunk.read_frame(server_sock, hmac_key=session_key)
+            self.assertIsNotNone(received)
+            self.assertIsInstance(received, Package)
+            self.assertIsInstance(received, MediaChunk)
+            self.assertEqual(received.ticket, ticket)
+            self.assertEqual(received.data, b"bloco binario polimorfico")
+        finally:
+            client_sock.close()
+            server_sock.close()
+
+    def test_mediachunk_read_frame_with_key_resolver(self) -> None:
+        """Valida read_frame em MediaChunk com key_resolver dinâmico."""
+        session_key = generate_session_key()
+        ticket = generate_upload_ticket()
+        chunk = MediaChunk(
+            ticket=ticket,
+            chunk_index=0,
+            total_chunks=1,
+            data=b"dados com key resolver",
+        )
+
+        client_sock, server_sock = socket.socketpair()
+        try:
+            chunk.send(client_sock, hmac_key=session_key)
+            resolver = lambda t_hex: session_key if t_hex == ticket.hex() else None
+            received = MediaChunk.read_frame(server_sock, key_resolver=resolver)
+            self.assertIsNotNone(received)
+            self.assertEqual(received.data, b"dados com key resolver")
+        finally:
+            client_sock.close()
+            server_sock.close()
+
+    def test_polymorphic_heterogeneous_collection(self) -> None:
+        """Valida processamento de coleção heterogênea de Packages."""
+        session_key = generate_session_key()
+        ticket = generate_upload_ticket()
+        packages: List[Package] = [
+            Message(action=Message.ACTION_SEND, payload={"msg": "polymorphism"}),
+            MediaChunk(ticket=ticket, chunk_index=0, total_chunks=1, data=b"binary_chunk"),
+        ]
+
+        frames = [pkg.to_frame_bytes(hmac_key=session_key) for pkg in packages]
+        self.assertEqual(len(frames), 2)
+        self.assertTrue(frames[0].startswith(CONTROL_MAGIC))
+        self.assertTrue(frames[1].startswith(DATA_MAGIC))
 
 
 if __name__ == "__main__":

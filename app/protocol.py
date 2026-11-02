@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
 Módulo de Protocolo de Rede para Homelab (Arquitetura Dual-Protocol)
-1. Canal de Controle (Porta 9000): Classe Message com Length-Prefixed Framing (40B header) e HMAC-SHA256.
-2. Canal de Dados/Mídia (Porta 9001): Classe MediaChunk com Chunks Indexados de 64KB (62B header) e HMAC-SHA256.
+1. Canal de Controle (Porta 9000): Classe Message com Length-Prefixed Framing
+   (40B header) e HMAC-SHA256.
+2. Canal de Dados/Mídia (Porta 9001): Classe MediaChunk com Chunks Indexados
+   de 64KB (62B header) e HMAC-SHA256.
 """
 
+from abc import ABC, abstractmethod
 from datetime import datetime
 import hashlib
 import hmac
@@ -31,7 +34,8 @@ MAX_CONTROL_PAYLOAD = 65536
 CONTROL_HEADER_FORMAT = ">2sHI32s"
 CONTROL_HEADER_SIZE = struct.calcsize(CONTROL_HEADER_FORMAT)
 
-# Cabeçalho de Chunk: Magic(2s) + Ticket(16s) + ChunkIdx(I:4B) + TotalChunks(I:4B) + DataLen(I:4B) + HMAC(32s) = 62 bytes
+# Cabeçalho de Chunk: Magic(2s) + Ticket(16s) + ChunkIdx(I:4B) + TotalChunks(I:4B)
+#                     + DataLen(I:4B) + HMAC(32s) = 62 bytes
 CHUNK_HEADER_FORMAT = ">2s16sIII32s"
 CHUNK_HEADER_SIZE = struct.calcsize(CHUNK_HEADER_FORMAT)
 
@@ -95,7 +99,41 @@ def recv_exact(sock: socket.socket, num_bytes: int) -> Optional[bytes]:
     return bytes(chunks)
 
 
-class Message:
+class Package(ABC):
+    """Classe base abstrata para todos os pacotes enquadrados do protocolo Homelab."""
+
+    @abstractmethod
+    def to_frame_bytes(
+        self,
+        hmac_key: Optional[Union[bytes, str]] = None,
+        **kwargs: Any,
+    ) -> bytes:
+        """Serializa o pacote em bytes binários enquadrados com assinatura HMAC-SHA256."""
+        pass
+
+    @abstractmethod
+    def send(
+        self,
+        sock: socket.socket,
+        hmac_key: Optional[Union[bytes, str]] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Transmite o pacote binário enquadrado através do socket conectado."""
+        pass
+
+    @classmethod
+    @abstractmethod
+    def read_frame(
+        cls,
+        sock: socket.socket,
+        hmac_key: Optional[Union[bytes, str]] = None,
+        **kwargs: Any,
+    ) -> Optional["Package"]:
+        """Lê, desenquadra e valida a assinatura HMAC de um pacote completo do socket."""
+        pass
+
+
+class Message(Package):
     """Representa uma mensagem no protocolo de controle da aplicação."""
 
     ACTION_REGISTER = "register"
@@ -143,7 +181,8 @@ class Message:
         msg_type: Optional[int] = None,
     ) -> bytes:
         """
-        Empacota a mensagem em um quadro binário com Length-Prefixed Framing (40B header) e HMAC-SHA256.
+        Empacota a mensagem em um quadro binário com Length-Prefixed Framing
+        (40B header) e HMAC-SHA256.
         Layout: Magic(2B) | MsgType(2B) | PayloadLen(4B) | HMAC-SHA256(32B) | Payload JSON
         """
         payload_bytes = self.to_bytes()
@@ -164,6 +203,20 @@ class Message:
         mac = compute_hmac(hmac_key, meta_prefix + payload_bytes)
         header = struct.pack(CONTROL_HEADER_FORMAT, CONTROL_MAGIC, msg_type, payload_len, mac)
         return header + payload_bytes
+
+    def to_frame_bytes(
+        self,
+        hmac_key: Optional[Union[bytes, str]] = None,
+        msg_type: Optional[int] = None,
+        **kwargs: Any,
+    ) -> bytes:
+        """
+        Serializa a mensagem de controle em quadro binário de 40B + payload JSON.
+        Delega para to_frame(...).
+        """
+        if msg_type is None and "msg_type" in kwargs:
+            msg_type = kwargs["msg_type"]
+        return self.to_frame(hmac_key=hmac_key, msg_type=msg_type)
 
     @classmethod
     def from_frame(
@@ -202,6 +255,21 @@ class Message:
         frame = self.to_frame(hmac_key=hmac_key, msg_type=msg_type)
         sock.sendall(frame)
 
+    def send(
+        self,
+        sock: socket.socket,
+        hmac_key: Optional[Union[bytes, str]] = None,
+        msg_type: Optional[int] = None,
+        **kwargs: Any,
+    ) -> None:
+        """
+        Transmite o quadro de controle enquadrado através do socket conectado.
+        Delega para send_framed(...).
+        """
+        if msg_type is None and "msg_type" in kwargs:
+            msg_type = kwargs["msg_type"]
+        self.send_framed(sock, hmac_key=hmac_key, msg_type=msg_type)
+
     @classmethod
     def recv_framed(
         cls,
@@ -239,6 +307,26 @@ class Message:
         return cls.from_bytes(payload_bytes)
 
     @classmethod
+    def read_frame(
+        cls,
+        sock: socket.socket,
+        hmac_key: Optional[Union[bytes, str]] = None,
+        pre_read_prefix: bytes = b"",
+        **kwargs: Any,
+    ) -> Optional["Message"]:
+        """
+        Lê e valida um quadro de controle completo do socket TCP.
+        Delega para recv_framed(...).
+        """
+        if not pre_read_prefix and "pre_read_prefix" in kwargs:
+            pre_read_prefix = kwargs["pre_read_prefix"]
+        return cls.recv_framed(
+            sock,
+            hmac_key=hmac_key,
+            pre_read_prefix=pre_read_prefix,
+        )
+
+    @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Message":
         """Instancia um objeto Message a partir de um dicionário."""
         action = data.get("action", "")
@@ -254,7 +342,10 @@ class Message:
 
     @classmethod
     def from_bytes(cls, data: bytes, encoding: str = "utf-8") -> "Message":
-        """Desserializa bytes de socket em um objeto Message (suporta frame binário ou JSON puro)."""
+        """
+        Desserializa bytes de socket em um objeto Message
+        (suporta frame binário ou JSON puro).
+        """
         if len(data) >= CONTROL_HEADER_SIZE and data[:2] == CONTROL_MAGIC:
             return cls.from_frame(data)
         return cls.from_json(data.decode(encoding))
@@ -277,11 +368,12 @@ class Message:
         return cls(action=cls.ACTION_RESPONSE, payload=payload)
 
 
-class MediaChunk:
+class MediaChunk(Package):
     """
     Representa um bloco binário indexado (até 64 KB) do Protocolo de Dados/Mídia (Porta 9001).
     Cabeçalho fixo de 62 bytes:
-    Magic(2B: b'HD') | Ticket(16B) | ChunkIndex(4B) | TotalChunks(4B) | DataLength(4B) | HMAC-SHA256(32B)
+    Magic(2B: b'HD') | Ticket(16B) | ChunkIndex(4B) | TotalChunks(4B)
+    | DataLength(4B) | HMAC-SHA256(32B)
     """
 
     def __init__(
@@ -330,11 +422,11 @@ class MediaChunk:
             len(self.data),
         )
 
-    def compute_mac(self, hmac_key: Union[bytes, str, None]) -> bytes:
+    def compute_mac(self, hmac_key: Optional[Union[bytes, str]] = None) -> bytes:
         """Calcula o HMAC-SHA256 cobrindo os metadados do cabeçalho e os bytes brutos do chunk."""
         return compute_hmac(hmac_key, self._metadata_prefix() + self.data)
 
-    def to_bytes(self, hmac_key: Union[bytes, str, None]) -> bytes:
+    def to_bytes(self, hmac_key: Optional[Union[bytes, str]] = None) -> bytes:
         """Empacota o cabeçalho de 62 bytes com HMAC-SHA256 seguido dos dados brutos do chunk."""
         mac = self.compute_mac(hmac_key)
         header = struct.pack(
@@ -348,12 +440,32 @@ class MediaChunk:
         )
         return header + self.data
 
-    def send(self, sock: socket.socket, hmac_key: Union[bytes, str, None]) -> None:
+    def to_frame_bytes(
+        self,
+        hmac_key: Optional[Union[bytes, str]] = None,
+        **kwargs: Any,
+    ) -> bytes:
+        """
+        Serializa o chunk de mídia em formato enquadrado binário (62B + dados).
+        Delega para to_bytes(...).
+        """
+        return self.to_bytes(hmac_key=hmac_key)
+
+    def send(
+        self,
+        sock: socket.socket,
+        hmac_key: Optional[Union[bytes, str]] = None,
+        **kwargs: Any,
+    ) -> None:
         """Transmite o chunk assinado pelo socket TCP."""
-        sock.sendall(self.to_bytes(hmac_key))
+        sock.sendall(self.to_bytes(hmac_key=hmac_key))
 
     @classmethod
-    def from_bytes(cls, raw_bytes: bytes, hmac_key: Union[bytes, str, None]) -> "MediaChunk":
+    def from_bytes(
+        cls,
+        raw_bytes: bytes,
+        hmac_key: Optional[Union[bytes, str]] = None,
+    ) -> "MediaChunk":
         """Desempacota e valida um chunk completo em memória."""
         if len(raw_bytes) < CHUNK_HEADER_SIZE:
             raise ValueError("Pacote menor que o cabeçalho de chunk de 62 bytes.")
@@ -379,7 +491,7 @@ class MediaChunk:
     def recv_from_socket(
         cls,
         sock: socket.socket,
-        key_resolver: Union[bytes, str, None, Callable[[str], Optional[bytes]]],
+        key_resolver: Union[bytes, str, None, Callable[[str], Optional[bytes]]] = None,
     ) -> Optional["MediaChunk"]:
         """
         Lê um único MediaChunk do socket TCP (62B de cabeçalho + DataLength bytes) e valida o HMAC.
@@ -400,7 +512,9 @@ class MediaChunk:
 
         data = recv_exact(sock, data_len)
         if data is None:
-            raise ConnectionError(f"Conexão encerrada durante leitura dos dados do chunk {chunk_idx}.")
+            raise ConnectionError(
+                f"Conexão encerrada durante leitura dos dados do chunk {chunk_idx}."
+            )
 
         ticket_hex = ticket.hex()
         if callable(key_resolver):
@@ -415,6 +529,20 @@ class MediaChunk:
             raise ValueError(f"Falha de integridade: HMAC inválido no chunk {chunk_idx}.")
 
         return cls(ticket=ticket, chunk_index=chunk_idx, total_chunks=total_chunks, data=data)
+
+    @classmethod
+    def read_frame(
+        cls,
+        sock: socket.socket,
+        hmac_key: Optional[Union[bytes, str, Callable[[str], Optional[bytes]]]] = None,
+        **kwargs: Any,
+    ) -> Optional["MediaChunk"]:
+        """
+        Lê e desenquadra um chunk de mídia do socket (delega para recv_from_socket).
+        Permite passar tanto `hmac_key` quanto `key_resolver` em kwargs ou posicionalmente.
+        """
+        key_resolver = kwargs.get("key_resolver", hmac_key)
+        return cls.recv_from_socket(sock, key_resolver=key_resolver)
 
     @classmethod
     def slice_file(
@@ -442,3 +570,31 @@ class MediaChunk:
                     total_chunks=total_chunks,
                     data=block,
                 )
+
+
+# Aliases canônicos de arquitetura
+ControlPackage = Message
+DataPackage = MediaChunk
+
+__all__ = [
+    "Package",
+    "Message",
+    "MediaChunk",
+    "ControlPackage",
+    "DataPackage",
+    "CONTROL_MAGIC",
+    "DATA_MAGIC",
+    "DEFAULT_HANDSHAKE_KEY",
+    "CHUNK_SIZE",
+    "MAX_CONTROL_PAYLOAD",
+    "CONTROL_HEADER_FORMAT",
+    "CONTROL_HEADER_SIZE",
+    "CHUNK_HEADER_FORMAT",
+    "CHUNK_HEADER_SIZE",
+    "generate_session_key",
+    "generate_upload_ticket",
+    "normalize_hmac_key",
+    "compute_hmac",
+    "verify_hmac",
+    "recv_exact",
+]
