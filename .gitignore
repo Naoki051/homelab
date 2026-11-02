@@ -40,3 +40,7 @@ envs/client.env
 # Operating System Files
 .DS_Store
 Thumbs.db
+
+# AI Teamwork Agent Workspace & Metadata
+.agents/teamwork/
+
